@@ -1,0 +1,7 @@
+pyboy
+numpy
+Pillow
+keyboard
+torch
+torchvision
+opencv-python
