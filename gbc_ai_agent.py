@@ -78,15 +78,11 @@ import cv2
 
 
 if torch_available:
-    try:
-        import torch
-        import torch.nn as nn
-        import torch.optim as optim
-        import torch.nn.functional as F
-        print(f"PyTorch {torch.__version__} loaded successfully!")
-    except Exception as e:
-        print(f"Error loading PyTorch: {e}")
-        torch_available = False
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    import torch.nn.functional as F
+    print(f"PyTorch {torch.__version__} loaded successfully!")
 
 
 class PokemonMemoryReader:
@@ -137,56 +133,45 @@ class PokemonMemoryReader:
     
     def _get_memory_addresses(self):
         """Gets memory addresses for the specific game"""
+        gen1_base = {
+            'player_money': 0xD347,
+            'badges': 0xD356,
+            'party_count': 0xD163,
+            'x_pos': 0xD362,
+            'y_pos': 0xD361,
+            'map_id': 0xD35E,
+            'items_count': 0xD31D,
+            'player_name': 0xD158,
+            'pokedex_owned': 0xD2F7,
+            'pokedex_seen': 0xD30A,
+            'party_species': 0xD164,
+            'party_levels': 0xD18C,
+            'party_hp': 0xD16C,
+            'battle_type': 0xD057
+        }
         
         if self.game_type == 'rb':
             return {
-                'player_money': 0xD347,
-                'badges': 0xD356,
-                'player_name': 0xD158,
+                **gen1_base,
                 'rival_name': 0xD34A,
-                'pokedex_owned': 0xD2F7,
-                'pokedex_seen': 0xD30A,
-                'party_count': 0xD163,
-                'party_species': 0xD164,
-                'party_levels': 0xD18C,
-                'party_hp': 0xD16C,
                 'party_max_hp': 0xD18D,
-                'x_pos': 0xD362,
-                'y_pos': 0xD361,
-                'map_id': 0xD35E,
-                'battle_type': 0xD057,
                 'enemy_hp': 0xCFE6,
                 'enemy_max_hp': 0xCFF4,
-                'items_count': 0xD31D,
                 'current_box_items': 0xD53A
             }
        
         elif self.game_type == 'yellow':
             return {
-                'player_money': 0xD347,
-                'badges': 0xD356,
-                'player_name': 0xD158,
-                'pikachu_happiness': 0xD46F,
-                'pokedex_owned': 0xD2F7,
-                'pokedex_seen': 0xD30A,
-                'party_count': 0xD163,
-                'party_species': 0xD164,
-                'party_levels': 0xD18C,
-                'party_hp': 0xD16C,
-                'x_pos': 0xD362,
-                'y_pos': 0xD361,
-                'map_id': 0xD35E,
-                'battle_type': 0xD057,
-                'items_count': 0xD31D
+                **gen1_base,
+                'pikachu_happiness': 0xD46F
             }
         
-        elif self.game_type == 'gs':
-            return {
+        elif self.game_type in ['gs', 'crystal']:
+            gen2_base = {
                 'player_money': 0xD84E,
                 'badges': 0xD857,
                 'player_name': 0xD47B,
                 'pokedex_owned': 0xDE99,
-                'pokedex_seen': 0xDEA9,
                 'party_count': 0xDCD7,
                 'party_species': 0xDCD8,
                 'party_levels': 0xDCFF,
@@ -196,35 +181,26 @@ class PokemonMemoryReader:
                 'map_id': 0xDCB5,
                 'johto_badges': 0xD857,
                 'kanto_badges': 0xD858,
-                'items_pocket': 0xD892,
-                'key_items_pocket': 0xD8BC,
-                'battle_type': 0xD0EE,
-                'time_played': 0xD4A0
+                'battle_type': 0xD0EE
             }
-      
-        elif self.game_type == 'crystal':
-            return {
-                'player_money': 0xD84E,
-                'badges': 0xD857,
-                'player_name': 0xD47B,
-                'player_gender': 0xD472,
-                'pokedex_owned': 0xDE99,
-                'pokedex_seen': 0xDEB9,
-                'party_count': 0xDCD7,
-                'party_species': 0xDCD8,
-                'party_levels': 0xDCFF,
-                'party_hp': 0xDD01,
-                'x_pos': 0xDCB8,
-                'y_pos': 0xDCB7,
-                'map_id': 0xDCB5,
-                'johto_badges': 0xD857,
-                'kanto_badges': 0xD858,
-                'battle_type': 0xD0EE,
-                'unown_dex': 0xDE41,
-                'mom_money': 0xD851
-            }
+            
+            if self.game_type == 'gs':
+                return {
+                    **gen2_base,
+                    'pokedex_seen': 0xDEA9,
+                    'items_pocket': 0xD892,
+                    'key_items_pocket': 0xD8BC,
+                    'time_played': 0xD4A0
+                }
+            else:  # crystal
+                return {
+                    **gen2_base,
+                    'player_gender': 0xD472,
+                    'pokedex_seen': 0xDEB9,
+                    'unown_dex': 0xDE41,
+                    'mom_money': 0xD851
+                }
         else:
-           
             return {
                 'player_money': 0xD347,
                 'badges': 0xD356,
@@ -768,16 +744,13 @@ class PokemonAI:
         screen = self.pyboy.screen.image
         gray = np.array(screen.convert('L'))
         
-      
         self.last_screen_array = gray.copy()
-        
         normalized = gray.astype(np.float32) / 255.0
         
         if torch_available and self.model is not None:
-            tensor = torch.from_numpy(normalized.copy()).unsqueeze(0)
+            tensor = torch.from_numpy(normalized).unsqueeze(0)
             return tensor.to(self.device)
-        else:
-            return normalized
+        return normalized
     
     def _detect_game_state(self, screen_array):
         """Detects current game state"""
@@ -835,45 +808,13 @@ class PokemonAI:
                 diff = np.mean(np.abs(screen_tensor - previous_screen))
             
             
-            if game_state == "exploring":
-                
-                if diff > 0.02:
-                    reward += 1.0
-                    self.stuck_counter = 0
-                else:
-                    self.stuck_counter += 1
-                    reward -= min(0.5, self.stuck_counter * 0.05)
-                
-                
-                screen_hash = self._get_screen_hash(screen_tensor)
-                if screen_hash not in self.visited_states:
-                    self.visited_states.add(screen_hash)
-                    reward += 3.0  
-                
-            elif game_state == "battle":
-                
-                reward += 0.5
-                
-                
-                battle_duration = self.frame_count - self.last_battle_frame
-                if battle_duration > 500:
-                    reward -= 0.1
-                
-                
-                if action in [5, 11, 12, 13, 14]: 
-                    reward += 0.3
-                    
-            elif game_state == "dialogue":
-                
-                if action in [5, 13]:  
-                    reward += 0.5
-                else:
-                    reward -= 0.1
-                    
-            elif game_state == "menu":
-               
-                if action in [1, 2, 5, 6]: 
-                    reward += 0.2
+            state_rewards = {
+                "exploring": self._calculate_exploration_reward(diff, screen_tensor),
+                "battle": self._calculate_battle_reward(action),
+                "dialogue": 0.5 if action in [5, 13] else -0.1,
+                "menu": 0.2 if action in [1, 2, 5, 6] else 0
+            }
+            reward += state_rewards.get(game_state, 0)
         
         
         if len(self.action_history) >= 20:
@@ -895,6 +836,62 @@ class PokemonAI:
         self.total_reward += reward
         
         return reward
+    
+    def _calculate_exploration_reward(self, diff, screen_tensor):
+        """Calculate reward for exploration state"""
+        reward = 0
+        if diff > 0.02:
+            reward += 1.0
+            self.stuck_counter = 0
+        else:
+            self.stuck_counter += 1
+            reward -= min(0.5, self.stuck_counter * 0.05)
+        
+        screen_hash = self._get_screen_hash(screen_tensor)
+        if screen_hash not in self.visited_states:
+            self.visited_states.add(screen_hash)
+            reward += 3.0
+        
+        return reward
+    
+    def _calculate_battle_reward(self, action):
+        """Calculate reward for battle state"""
+        reward = 0.5
+        battle_duration = self.frame_count - self.last_battle_frame
+        if battle_duration > 500:
+            reward -= 0.1
+        if action in [5, 11, 12, 13, 14]:
+            reward += 0.3
+        return reward
+    
+    def _get_exploration_weights(self, memory_state):
+        """Get action weights for exploration"""
+        if self.stuck_counter > 20:
+            return [0.05, 0.15, 0.15, 0.15, 0.15, 0.1, 0.1, 0.05, 0.02, 0.02, 0.02, 0.02, 0.02, 0.0, 0.0]
+        
+        if memory_state and sum(memory_state.get('party_hp', [100])) > 100:
+            return [0.05, 0.15, 0.15, 0.15, 0.15, 0.05, 0.1, 0.02, 0.01, 0.04, 0.04, 0.04, 0.04, 0.01, 0.0]
+        return [0.05, 0.2, 0.2, 0.2, 0.2, 0.05, 0.05, 0.02, 0.01, 0.01, 0.01, 0.0, 0.0, 0.0, 0.0]
+    
+    def _safe_pickle_save(self, data, path, description="data"):
+        """Safely save data with pickle"""
+        try:
+            with open(path, 'wb') as f:
+                pickle.dump(data, f)
+            print(f"{description} saved!")
+        except Exception as e:
+            print(f"{description} save error: {e}")
+    
+    def _safe_pickle_load(self, path, description="data"):
+        """Safely load data with pickle"""
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, 'rb') as f:
+                return pickle.load(f)
+        except Exception as e:
+            print(f"{description} load error: {e}")
+            return None
     
     def _get_screen_hash(self, screen_tensor):
         """Calculates screen hash for tracking visited states"""
@@ -970,20 +967,7 @@ class PokemonAI:
         if random.random() < self.epsilon or self.model is None:
             
             if game_state == "exploring":
-                
-                if self.stuck_counter > 20:
-                  
-                    weights = [0.05, 0.15, 0.15, 0.15, 0.15, 0.1, 0.1, 0.05, 0.02, 0.02, 0.02, 0.02, 0.02, 0.0, 0.0]
-                else:
-                   
-                   
-                    if memory_state and sum(memory_state.get('party_hp', [100])) > 100:
-                       
-                        weights = [0.05, 0.15, 0.15, 0.15, 0.15, 0.05, 0.1, 0.02, 0.01, 0.04, 0.04, 0.04, 0.04, 0.01, 0.0]
-                    else:
-                       
-                        weights = [0.05, 0.2, 0.2, 0.2, 0.2, 0.05, 0.05, 0.02, 0.01, 0.01, 0.01, 0.0, 0.0, 0.0, 0.0]
-                    
+                weights = self._get_exploration_weights(memory_state)
                 return random.choices(range(len(self.actions)), weights=weights[:len(self.actions)])[0]
             else:
                 return random.randint(0, len(self.actions) - 1)
@@ -1164,13 +1148,10 @@ class PokemonAI:
     
     def _load_checkpoints(self):
         """Loads saved checkpoints"""
-        if os.path.exists(self.checkpoints_path):
-            try:
-                with open(self.checkpoints_path, 'rb') as f:
-                    self.checkpoint_states = pickle.load(f)
-                print(f"Loaded {len(self.checkpoint_states)} checkpoints")
-            except:
-                self.checkpoint_states = {}
+        data = self._safe_pickle_load(self.checkpoints_path, "Checkpoints")
+        self.checkpoint_states = data if data is not None else {}
+        if self.checkpoint_states:
+            print(f"Loaded {len(self.checkpoint_states)} checkpoints")
     
     def save_game_state(self, slot=0):
         """Saves current game state"""
@@ -1189,27 +1170,27 @@ class PokemonAI:
     
     def _save_model(self):
         """Saves model and state"""
-        if self.model is not None:
-            try:
-                checkpoint = {
-                    'model_state': self.model.state_dict(),
-                    'optimizer_state': self.optimizer.state_dict(),
-                    'epsilon': self.epsilon,
-                    'episode': self.episode_count,
-                    'frame': self.frame_count,
-                    'battles_won': self.battles_won,
-                    'pokemon_caught': self.pokemon_caught,
-                    'badges_earned': self.badges_earned
-                }
-                torch.save(checkpoint, self.model_path)
+        if self.model is None:
+            return
+            
+        try:
+            checkpoint = {
+                'model_state': self.model.state_dict(),
+                'optimizer_state': self.optimizer.state_dict(),
+                'epsilon': self.epsilon,
+                'episode': self.episode_count,
+                'frame': self.frame_count,
+                'battles_won': self.battles_won,
+                'pokemon_caught': self.pokemon_caught,
+                'badges_earned': self.badges_earned
+            }
+            torch.save(checkpoint, self.model_path)
+            
+            self._safe_pickle_save(self.checkpoint_states, self.checkpoints_path, "Checkpoints")
                 
-               
-                with open(self.checkpoints_path, 'wb') as f:
-                    pickle.dump(self.checkpoint_states, f)
-                    
-                print(f"Model saved!")
-            except Exception as e:
-                print(f"Save error: {e}")
+            print("Model saved!")
+        except Exception as e:
+            print(f"Save error: {e}")
     
     def _load_stats(self):
         """Loads Pokemon statistics"""
@@ -1265,35 +1246,27 @@ class PokemonAI:
     
     def _save_memory(self):
         """Saves experience memory"""
-        try:
-            memory_data = {
-                'memory': list(self.memory)[-20000:],
-                'priority': list(self.priority_memory)
-            }
-            with open(self.memory_path, 'wb') as f:
-                pickle.dump(memory_data, f)
-            print(f"Memory saved: {len(memory_data['memory'])} experiences")
-        except Exception as e:
-            print(f"Memory save error: {e}")
+        memory_data = {
+            'memory': list(self.memory)[-20000:],
+            'priority': list(self.priority_memory)
+        }
+        self._safe_pickle_save(memory_data, self.memory_path, f"Memory ({len(memory_data['memory'])} experiences)")
     
     def _load_memory(self):
         """Loads experience memory"""
-        if os.path.exists(self.memory_path):
-            try:
-                with open(self.memory_path, 'rb') as f:
-                    memory_data = pickle.load(f)
-                
-                for exp in memory_data.get('memory', [])[-10000:]:
-                    if len(exp) == 5 and isinstance(exp[0], np.ndarray):
-                        self.memory.append(exp)
-                
-                for exp in memory_data.get('priority', []):
-                    if len(exp) == 5 and isinstance(exp[0], np.ndarray):
-                        self.priority_memory.append(exp)
-                
-                print(f"Memory loaded: {len(self.memory)} experiences")
-            except Exception as e:
-                print(f"Memory load error: {e}")
+        memory_data = self._safe_pickle_load(self.memory_path, "Memory")
+        if memory_data is None:
+            return
+            
+        for exp in memory_data.get('memory', [])[-10000:]:
+            if len(exp) == 5 and isinstance(exp[0], np.ndarray):
+                self.memory.append(exp)
+        
+        for exp in memory_data.get('priority', []):
+            if len(exp) == 5 and isinstance(exp[0], np.ndarray):
+                self.priority_memory.append(exp)
+        
+        print(f"Memory loaded: {len(self.memory)} experiences")
     
     def play(self):
         """Main loop optimized for Pokemon"""
