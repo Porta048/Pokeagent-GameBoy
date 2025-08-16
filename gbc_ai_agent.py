@@ -449,10 +449,7 @@ class PokemonStateDetector:
     """Detects Pokemon game state"""
     
     def __init__(self):
-        self.last_battle_check = 0
-        self.last_menu_check = 0
-        self.battle_patterns = []
-        self.menu_patterns = []
+        pass
         
     def detect_battle(self, screen_array):
         """Detects if we are in battle"""
@@ -499,23 +496,195 @@ class PokemonStateDetector:
         
         return contrast > 30 and has_box
     
-    def detect_movement_blocked(self, current_screen, previous_screen):
-        """Detects if movement is blocked"""
-        if previous_screen is None:
-            return False
-            
-       
-        center_current = current_screen[50:90, 60:100]
-        center_previous = previous_screen[50:90, 60:100]
-        
-        diff = np.mean(np.abs(center_current - center_previous))
-        
-       
-        return diff < 0.01
 
 
 
 if torch_available:
+    class ExplorerDQN(nn.Module):
+        """DQN specializzato per esplorazione"""
+        def __init__(self, n_actions):
+            super(ExplorerDQN, self).__init__()
+            self.conv1 = nn.Conv2d(1, 32, kernel_size=8, stride=4)
+            self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+            self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+            
+            convh = ((((144 - 8) // 4 + 1) - 4) // 2 + 1) - 3 + 1
+            convw = ((((160 - 8) // 4 + 1) - 4) // 2 + 1) - 3 + 1
+            linear_input_size = convh * convw * 64
+            
+            self.fc1 = nn.Linear(linear_input_size, 256)
+            self.fc2 = nn.Linear(256, n_actions)
+        
+        def forward(self, x):
+            x = F.relu(self.conv1(x))
+            x = F.relu(self.conv2(x))
+            x = F.relu(self.conv3(x))
+            x = x.view(x.size(0), -1)
+            x = F.relu(self.fc1(x))
+            return self.fc2(x)
+
+    class BattleDQN(nn.Module):
+        """DQN specializzato per battaglie"""
+        def __init__(self, n_actions):
+            super(BattleDQN, self).__init__()
+            self.conv1 = nn.Conv2d(1, 32, kernel_size=8, stride=4)
+            self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+            self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+            
+            convh = ((((144 - 8) // 4 + 1) - 4) // 2 + 1) - 3 + 1
+            convw = ((((160 - 8) // 4 + 1) - 4) // 2 + 1) - 3 + 1
+            linear_input_size = convh * convw * 64
+            
+            self.fc1 = nn.Linear(linear_input_size, 512)
+            self.fc2 = nn.Linear(512, 256)
+            self.fc3 = nn.Linear(256, n_actions)
+        
+        def forward(self, x):
+            x = F.relu(self.conv1(x))
+            x = F.relu(self.conv2(x))
+            x = F.relu(self.conv3(x))
+            x = x.view(x.size(0), -1)
+            x = F.relu(self.fc1(x))
+            x = F.relu(self.fc2(x))
+            return self.fc3(x)
+
+    class MenuDQN(nn.Module):
+        """DQN specializzato per navigazione menu"""
+        def __init__(self, n_actions):
+            super(MenuDQN, self).__init__()
+            self.conv1 = nn.Conv2d(1, 16, kernel_size=4, stride=2)
+            self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=2)
+            
+            convh = (((144 - 4) // 2 + 1) - 3) // 2 + 1
+            convw = (((160 - 4) // 2 + 1) - 3) // 2 + 1
+            linear_input_size = convh * convw * 32
+            
+            self.fc1 = nn.Linear(linear_input_size, 128)
+            self.fc2 = nn.Linear(128, n_actions)
+        
+        def forward(self, x):
+            x = F.relu(self.conv1(x))
+            x = F.relu(self.conv2(x))
+            x = x.view(x.size(0), -1)
+            x = F.relu(self.fc1(x))
+            return self.fc2(x)
+
+    class PokemonMultiAgent:
+        """Multi-Agent Architecture per Pokemon"""
+        def __init__(self, n_actions, device):
+            self.device = device
+            self.n_actions = n_actions
+            
+            # Agenti specializzati
+            self.explorer_agent = ExplorerDQN(n_actions).to(device)
+            self.battle_agent = BattleDQN(n_actions).to(device)
+            self.menu_agent = MenuDQN(n_actions).to(device)
+            
+            # Target networks
+            self.explorer_target = ExplorerDQN(n_actions).to(device)
+            self.battle_target = BattleDQN(n_actions).to(device)
+            self.menu_target = MenuDQN(n_actions).to(device)
+            
+            # Ottimizzatori
+            self.explorer_optimizer = optim.Adam(self.explorer_agent.parameters(), lr=0.0001)
+            self.battle_optimizer = optim.Adam(self.battle_agent.parameters(), lr=0.0003)
+            self.menu_optimizer = optim.Adam(self.menu_agent.parameters(), lr=0.0002)
+            
+            # Inizializza target networks
+            self.explorer_target.load_state_dict(self.explorer_agent.state_dict())
+            self.battle_target.load_state_dict(self.battle_agent.state_dict())
+            self.menu_target.load_state_dict(self.menu_agent.state_dict())
+            
+        def choose_action(self, state, game_state, epsilon):
+            """Sceglie azione basata sul game state"""
+            if random.random() < epsilon:
+                return random.randint(0, self.n_actions - 1)
+            
+            with torch.no_grad():
+                state_batch = state.unsqueeze(0)
+                
+                if game_state == "battle":
+                    q_values = self.battle_agent(state_batch)
+                elif game_state == "menu":
+                    q_values = self.menu_agent(state_batch)
+                else:  # exploring
+                    q_values = self.explorer_agent(state_batch)
+                
+                return q_values.argmax().item()
+        
+        def train_agent(self, batch, game_state):
+            """Addestra l'agente appropriato"""
+            if len(batch) < 4:
+                return
+            
+            states = []
+            next_states = []
+            
+            for exp in batch:
+                if isinstance(exp[0], np.ndarray) and exp[0].shape == (144, 160):
+                    states.append(exp[0])
+                    next_states.append(exp[3])
+            
+            if len(states) < 4:
+                return
+            
+            states_np = np.expand_dims(np.array(states), axis=1)
+            next_states_np = np.expand_dims(np.array(next_states), axis=1)
+            
+            states_t = torch.FloatTensor(states_np).to(self.device)
+            actions = torch.LongTensor([e[1] for e in batch[:len(states)]]).to(self.device)
+            rewards = torch.FloatTensor([e[2] for e in batch[:len(states)]]).to(self.device)
+            next_states_t = torch.FloatTensor(next_states_np).to(self.device)
+            dones = torch.FloatTensor([e[4] for e in batch[:len(states)]]).to(self.device)
+            
+            if game_state == "battle":
+                current_q_values = self.battle_agent(states_t).gather(1, actions.unsqueeze(1))
+                with torch.no_grad():
+                    next_q_values = self.battle_target(next_states_t).max(1)[0]
+                    target_q_values = rewards + (1 - dones) * 0.99 * next_q_values
+                
+                loss = F.smooth_l1_loss(current_q_values.squeeze(), target_q_values)
+                self.battle_optimizer.zero_grad()
+                loss.backward()
+                self.battle_optimizer.step()
+                
+            elif game_state == "menu":
+                current_q_values = self.menu_agent(states_t).gather(1, actions.unsqueeze(1))
+                with torch.no_grad():
+                    next_q_values = self.menu_target(next_states_t).max(1)[0]
+                    target_q_values = rewards + (1 - dones) * 0.99 * next_q_values
+                
+                loss = F.smooth_l1_loss(current_q_values.squeeze(), target_q_values)
+                self.menu_optimizer.zero_grad()
+                loss.backward()
+                self.menu_optimizer.step()
+                
+            else:  # exploring
+                current_q_values = self.explorer_agent(states_t).gather(1, actions.unsqueeze(1))
+                with torch.no_grad():
+                    next_q_values = self.explorer_target(next_states_t).max(1)[0]
+                    target_q_values = rewards + (1 - dones) * 0.99 * next_q_values
+                
+                loss = F.smooth_l1_loss(current_q_values.squeeze(), target_q_values)
+                self.explorer_optimizer.zero_grad()
+                loss.backward()
+                self.explorer_optimizer.step()
+            
+            return loss.item()
+        
+        def update_target_networks(self):
+            """Aggiorna le target networks"""
+            tau = 0.005
+            
+            for target_param, param in zip(self.explorer_target.parameters(), self.explorer_agent.parameters()):
+                target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
+            
+            for target_param, param in zip(self.battle_target.parameters(), self.battle_agent.parameters()):
+                target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
+                
+            for target_param, param in zip(self.menu_target.parameters(), self.menu_agent.parameters()):
+                target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
+
     class PokemonDQN(nn.Module):
         """Deep Q-Network optimized for Pokemon"""
         def __init__(self, n_actions):
@@ -648,19 +817,14 @@ class PokemonAI:
         self.epsilon_decay = 0.9995
         self.learning_rate = 0.00025
         self.memory = deque(maxlen=50000)
-        self.priority_memory = deque(maxlen=10000)
         
-       
+        # Inizializza device prima di tutto
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
         
-        
-        self.model = None
-        self.target_model = None
-        self.optimizer = None
-        
         if torch_available:
-            self._init_or_load_model()
+            self.multi_agent = PokemonMultiAgent(len(self.actions), self.device)
+        
         
         
         self.frame_count = 0
@@ -678,11 +842,9 @@ class PokemonAI:
         self.action_history = deque(maxlen=100)
         self.reward_history = deque(maxlen=1000)
         self.loss_history = deque(maxlen=100)
-        self.position_history = deque(maxlen=1000)
         
         
         self.stuck_counter = 0
-        self.loop_detector = {}
         self.visited_states = set()
         self.checkpoint_states = {}
         self.last_checkpoint = None
@@ -690,7 +852,6 @@ class PokemonAI:
         
         self.current_game_state = "exploring"  
         self.last_battle_frame = 0
-        self.consecutive_battles = 0
         
         
         self.last_memory_check = 0
@@ -715,29 +876,6 @@ class PokemonAI:
             print(f"  - Pokemon in party: {initial_state.get('party_count', 0)}")
             print(f"  - Pokedex: {initial_state.get('pokedex_owned', 0)}/{initial_state.get('pokedex_seen', 0)}")
     
-    def _init_or_load_model(self):
-        """Initializes or loads the model"""
-        try:
-            self.model = PokemonDQN(len(self.actions)).to(self.device)
-            self.target_model = PokemonDQN(len(self.actions)).to(self.device)
-            self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
-            
-            if os.path.exists(self.model_path):
-                print(f"Loading existing model...")
-                checkpoint = torch.load(self.model_path, map_location=self.device)
-                self.model.load_state_dict(checkpoint['model_state'])
-                self.target_model.load_state_dict(checkpoint['model_state'])
-                self.optimizer.load_state_dict(checkpoint['optimizer_state'])
-                self.epsilon = checkpoint.get('epsilon', self.epsilon)
-                print("Model loaded!")
-            else:
-                print("Creating new model...")
-                self.target_model.load_state_dict(self.model.state_dict())
-                print("New model created!")
-            
-        except Exception as e:
-            print(f"Error initializing model: {e}")
-            self.model = None
     
     def _get_screen_tensor(self):
         """Gets screen as PyTorch tensor"""
@@ -747,7 +885,7 @@ class PokemonAI:
         self.last_screen_array = gray.copy()
         normalized = gray.astype(np.float32) / 255.0
         
-        if torch_available and self.model is not None:
+        if torch_available and hasattr(self, 'multi_agent'):
             tensor = torch.from_numpy(normalized).unsqueeze(0)
             return tensor.to(self.device)
         return normalized
@@ -771,107 +909,46 @@ class PokemonAI:
         return self.current_game_state
     
     def _calculate_reward(self, screen_tensor, previous_screen, action):
-        """Pokemon-specific reward system with memory-based reward shaping"""
+        """Curriculum Learning reward system"""
         reward = 0
         
-       
         if hasattr(self, 'last_screen_array'):
             game_state = self._detect_game_state(self.last_screen_array)
         else:
             game_state = "exploring"
         
-        
+        memory_state = None
         if self.frame_count - self.last_memory_check >= self.memory_check_interval:
             self.last_memory_check = self.frame_count
-            
-        
             memory_state = self.memory_reader.get_current_state()
-            
-            
             memory_reward = self.memory_reader.calculate_reward_events(memory_state)
             reward += memory_reward
             
-            
             self.badges_earned = memory_state.get('badges', 0)
             self.pokemon_caught = memory_state.get('pokedex_owned', 0)
-            
-           
-            if memory_reward > 100:
-                self._save_checkpoint(screen_tensor)
-                print(f"IMPORTANT EVENT! Reward: +{memory_reward}")
         
-       
         if previous_screen is not None:
             if torch_available and isinstance(screen_tensor, torch.Tensor):
                 diff = torch.abs(screen_tensor - previous_screen).mean().item()
             else:
                 diff = np.mean(np.abs(screen_tensor - previous_screen))
             
-            
-            state_rewards = {
-                "exploring": self._calculate_exploration_reward(diff, screen_tensor),
-                "battle": self._calculate_battle_reward(action),
-                "dialogue": 0.5 if action in [5, 13] else -0.1,
-                "menu": 0.2 if action in [1, 2, 5, 6] else 0
-            }
-            reward += state_rewards.get(game_state, 0)
+            if diff > 0.02:
+                reward += 1.0
+                self.stuck_counter = 0
+            else:
+                self.stuck_counter += 1
+                reward -= 0.1
         
+        # CURRICULUM LEARNING - Calcola reward basato sugli obiettivi correnti
+        if torch_available and hasattr(self, 'curriculum'):
+            reward = self.curriculum.calculate_curriculum_reward(reward, game_state, memory_state)
         
-        if len(self.action_history) >= 20:
-            recent = list(self.action_history)[-20:]
-            unique_ratio = len(set(recent)) / len(recent)
-            if unique_ratio < 0.3:
-                reward -= 2.0
-            elif unique_ratio < 0.5:
-                reward -= 0.5
-     
-        reward += 0.01
-        
-        
-        if self.stuck_counter > 50:
-            reward -= 5.0
-            print("Stuck for too long! Attempting to unstuck...")
-            
         self.reward_history.append(reward)
         self.total_reward += reward
         
         return reward
     
-    def _calculate_exploration_reward(self, diff, screen_tensor):
-        """Calculate reward for exploration state"""
-        reward = 0
-        if diff > 0.02:
-            reward += 1.0
-            self.stuck_counter = 0
-        else:
-            self.stuck_counter += 1
-            reward -= min(0.5, self.stuck_counter * 0.05)
-        
-        screen_hash = self._get_screen_hash(screen_tensor)
-        if screen_hash not in self.visited_states:
-            self.visited_states.add(screen_hash)
-            reward += 3.0
-        
-        return reward
-    
-    def _calculate_battle_reward(self, action):
-        """Calculate reward for battle state"""
-        reward = 0.5
-        battle_duration = self.frame_count - self.last_battle_frame
-        if battle_duration > 500:
-            reward -= 0.1
-        if action in [5, 11, 12, 13, 14]:
-            reward += 0.3
-        return reward
-    
-    def _get_exploration_weights(self, memory_state):
-        """Get action weights for exploration"""
-        if self.stuck_counter > 20:
-            return [0.05, 0.15, 0.15, 0.15, 0.15, 0.1, 0.1, 0.05, 0.02, 0.02, 0.02, 0.02, 0.02, 0.0, 0.0]
-        
-        if memory_state and sum(memory_state.get('party_hp', [100])) > 100:
-            return [0.05, 0.15, 0.15, 0.15, 0.15, 0.05, 0.1, 0.02, 0.01, 0.04, 0.04, 0.04, 0.04, 0.01, 0.0]
-        return [0.05, 0.2, 0.2, 0.2, 0.2, 0.05, 0.05, 0.02, 0.01, 0.01, 0.01, 0.0, 0.0, 0.0, 0.0]
     
     def _safe_pickle_save(self, data, path, description="data"):
         """Safely save data with pickle"""
@@ -907,129 +984,21 @@ class PokemonAI:
         return hashlib.md5(screen_bytes).hexdigest()
     
     def choose_action(self, state):
-        """Context-aware action selection for Pokemon with memory guidance"""
-       
-        if hasattr(self, 'last_screen_array'):
-            game_state = self.current_game_state
+        """Multi-Agent action selection"""
+        game_state = self.current_game_state if hasattr(self, 'current_game_state') else "exploring"
+        
+        # MULTI-AGENT ARCHITECTURE
+        if torch_available and hasattr(self, 'multi_agent'):
+            action = self.multi_agent.choose_action(state, game_state, self.epsilon)
         else:
-            game_state = "exploring"
-        
-       
-        memory_state = None
-        if hasattr(self, 'memory_reader') and self.frame_count % 100 == 0:
-            memory_state = self.memory_reader.get_current_state()
-        
-        
-        if len(self.action_history) >= 10:
-            recent_actions = list(self.action_history)[-10:]
-            unique_actions = len(set(recent_actions))
-            
-            if unique_actions <= 2:
-                
-                self.epsilon = min(0.8, self.epsilon + 0.3)
-                print(f"Loop detected! Increasing exploration (ε={self.epsilon:.2f})")
-        
-        
-        if memory_state and memory_state.get('party_hp'):
-         
-            total_hp = sum(memory_state.get('party_hp', []))
-            if total_hp < 50 and game_state == "exploring":
-               
-                if random.random() < 0.3:
-                    return random.choice([1, 2, 3, 4])  
-        
-       
-        if game_state == "dialogue":
-            
-            if random.random() < 0.7:
-                return 5 if random.random() < 0.7 else 13 
-                
-        elif game_state == "battle":
-            
-            if memory_state:
-                our_hp = sum(memory_state.get('party_hp', [1]))
-                if our_hp < 20:
-                    
-                    if random.random() < 0.3:
-                        return 2 
-                        
-            
-            if random.random() < self.epsilon:
-                weights = [0.05, 0.1, 0.1, 0.05, 0.05, 0.3, 0.15, 0.02, 0.02, 0.05, 0.05, 0.03, 0.03, 0.0, 0.0]
-                return random.choices(range(len(self.actions)), weights=weights[:len(self.actions)])[0]
-                
-        elif game_state == "menu":
-            
-            if random.random() < 0.3:
-                return random.choice([1, 2, 5, 6])  
-        
-   
-        if random.random() < self.epsilon or self.model is None:
-            
-            if game_state == "exploring":
-                weights = self._get_exploration_weights(memory_state)
-                return random.choices(range(len(self.actions)), weights=weights[:len(self.actions)])[0]
-            else:
-                return random.randint(0, len(self.actions) - 1)
-        else:
-           
-            with torch.no_grad():
-                state_batch = state.unsqueeze(0)
-                q_values = self.model(state_batch)
-                
-               
-                if memory_state:
-                    
-                    if sum(memory_state.get('party_hp', [100])) < 50:
-                        q_values[0][6] += 1.0  
-                        
-                   
-                    if memory_state.get('player_money', 0) > 10000:
-                        for i in [9, 10, 11, 12]:  
-                            if i < len(self.actions):
-                                q_values[0][i] -= 0.5
-                
-              
-                if game_state == "dialogue":
-                    q_values[0][5] += 2.0 
-                    q_values[0][13] += 1.0 
-                elif game_state == "battle":
-                    
-                    for i in [5, 11, 12, 13, 14]:
-                        if i < len(self.actions):
-                            q_values[0][i] += 0.5
-                
-               
-                if len(self.action_history) > 0 and self.stuck_counter > 10:
-                    last_action = self.action_history[-1]
-                    q_values[0][last_action] -= 5.0
-                
-                action = q_values.argmax().item()
+            action = random.randint(0, len(self.actions) - 1)
         
         self.action_history.append(action)
         return action
     
-    def intelligent_unstuck(self):
-        """Advanced system for getting unstuck"""
-        if self.stuck_counter > 100:
-            strategies = [
-                
-                lambda: [random.choice(range(len(self.actions))) for _ in range(10)],
-                
-                lambda: self.load_last_checkpoint() if self.checkpoint_states else None,
-                
-                lambda: [7, 0, 0, 6],  
-               
-                lambda: [1, 2, 3, 4, 5, 6]
-            ]
-            
-            strategy = strategies[self.stuck_counter // 100 % len(strategies)]
-            return strategy()
-        
-        return None
     
     def remember(self, state, action, reward, next_state, done):
-        """Saves experience with priority"""
+        """Saves experience for multi-agent learning"""
         if torch_available and isinstance(state, torch.Tensor):
             state_np = state.squeeze(0).cpu().numpy()
             next_state_np = next_state.squeeze(0).cpu().numpy()
@@ -1037,102 +1006,69 @@ class PokemonAI:
             state_np = state
             next_state_np = next_state
         
-        experience = (state_np, action, reward, next_state_np, done)
+        # Aggiungi game_state all'esperienza
+        game_state = self.current_game_state if hasattr(self, 'current_game_state') else "exploring"
+        experience = (state_np, action, reward, next_state_np, done, game_state)
         self.memory.append(experience)
-        
-        
-        if abs(reward) > 3.0 or done or self.current_game_state == "battle":
-            self.priority_memory.append(experience)
     
     def replay(self):
-        """Training with prioritized experience replay"""
-        if self.model is None or len(self.memory) < self.batch_size:
+        """Multi-agent replay training"""
+        if not (torch_available and hasattr(self, 'multi_agent')) or len(self.memory) < self.batch_size:
             return
         
         try:
-           
-            priority_size = min(self.batch_size // 2, len(self.priority_memory))
-            normal_size = self.batch_size - priority_size
+            # Raggruppa esperienze per game state
+            explorer_batch = []
+            battle_batch = []
+            menu_batch = []
             
-            batch = []
-            if priority_size > 0:
-                batch.extend(random.sample(self.priority_memory, priority_size))
-            if normal_size > 0 and len(self.memory) >= normal_size:
-                batch.extend(random.sample(self.memory, normal_size))
+            for exp in random.sample(self.memory, min(self.batch_size * 3, len(self.memory))):
+                if len(exp) >= 6:  # Include game_state
+                    game_state = exp[5]
+                    if game_state == "battle":
+                        battle_batch.append(exp)
+                    elif game_state == "menu":
+                        menu_batch.append(exp)
+                    else:
+                        explorer_batch.append(exp)
             
+            loss_total = 0
+            losses_count = 0
             
-            states = []
-            next_states = []
+            # Addestra ogni agente con le sue esperienze
+            if len(explorer_batch) >= 4:
+                loss = self.multi_agent.train_agent(explorer_batch[:self.batch_size], "exploring")
+                if loss:
+                    loss_total += loss
+                    losses_count += 1
             
-            for exp in batch:
-                if isinstance(exp[0], np.ndarray) and exp[0].shape == (144, 160):
-                    states.append(exp[0])
-                    next_states.append(exp[3])
+            if len(battle_batch) >= 4:
+                loss = self.multi_agent.train_agent(battle_batch[:self.batch_size], "battle")
+                if loss:
+                    loss_total += loss
+                    losses_count += 1
             
-            if len(states) < 4:
-                return
+            if len(menu_batch) >= 4:
+                loss = self.multi_agent.train_agent(menu_batch[:self.batch_size], "menu")
+                if loss:
+                    loss_total += loss
+                    losses_count += 1
             
-          
-            states_np = np.expand_dims(np.array(states), axis=1)
-            next_states_np = np.expand_dims(np.array(next_states), axis=1)
+            if losses_count > 0:
+                avg_loss = loss_total / losses_count
+                self.loss_history.append(avg_loss)
             
-            states_t = torch.FloatTensor(states_np).to(self.device)
-            actions = torch.LongTensor([e[1] for e in batch[:len(states)]]).to(self.device)
-            rewards = torch.FloatTensor([e[2] for e in batch[:len(states)]]).to(self.device)
-            next_states_t = torch.FloatTensor(next_states_np).to(self.device)
-            dones = torch.FloatTensor([e[4] for e in batch[:len(states)]]).to(self.device)
-            
-       
-            current_q_values = self.model(states_t).gather(1, actions.unsqueeze(1))
-            
-            with torch.no_grad():
-                next_actions = self.model(next_states_t).argmax(1).unsqueeze(1)
-                next_q_values = self.target_model(next_states_t).gather(1, next_actions).squeeze(1)
-                target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
-            
-            
-            loss = F.smooth_l1_loss(current_q_values.squeeze(), target_q_values)
-            
-            self.optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-            self.optimizer.step()
-            
-            self.loss_history.append(loss.item())
-            
-           
             if self.epsilon > self.epsilon_min:
                 self.epsilon *= self.epsilon_decay
-            
+                
         except Exception as e:
-            print(f"Training error: {e}")
+            print(f"Multi-agent training error: {e}")
     
     def update_target_model(self):
-        """Soft update of target model"""
-        if self.model is not None and self.target_model is not None:
-            tau = 0.005
-            for target_param, param in zip(self.target_model.parameters(), self.model.parameters()):
-                target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
+        """Update target networks for multi-agent"""
+        if torch_available and hasattr(self, 'multi_agent'):
+            self.multi_agent.update_target_networks()
     
-    def cleanup_memory(self):
-        """Periodic memory cleanup for performance"""
-        
-        seen = set()
-        unique_memory = []
-        
-        for exp in self.memory:
-            exp_hash = hash((exp[1], exp[2], exp[4])) 
-            if exp_hash not in seen:
-                seen.add(exp_hash)
-                unique_memory.append(exp)
-        
-        self.memory = deque(unique_memory, maxlen=self.memory.maxlen)
-        
-      
-        self.priority_memory = deque(
-            [exp for exp in self.priority_memory if abs(exp[2]) > 1.0],
-            maxlen=self.priority_memory.maxlen
-        )
     
     def _save_checkpoint(self, state):
         """Saves checkpoint for backtracking"""
@@ -1169,14 +1105,15 @@ class PokemonAI:
             print(f"Savestate loaded from slot {slot}")
     
     def _save_model(self):
-        """Saves model and state"""
-        if self.model is None:
+        """Saves multi-agent models"""
+        if not (torch_available and hasattr(self, 'multi_agent')):
             return
             
         try:
             checkpoint = {
-                'model_state': self.model.state_dict(),
-                'optimizer_state': self.optimizer.state_dict(),
+                'explorer_state': self.multi_agent.explorer_agent.state_dict(),
+                'battle_state': self.multi_agent.battle_agent.state_dict(),
+                'menu_state': self.multi_agent.menu_agent.state_dict(),
                 'epsilon': self.epsilon,
                 'episode': self.episode_count,
                 'frame': self.frame_count,
@@ -1188,7 +1125,7 @@ class PokemonAI:
             
             self._safe_pickle_save(self.checkpoint_states, self.checkpoints_path, "Checkpoints")
                 
-            print("Model saved!")
+            print("Multi-agent models saved!")
         except Exception as e:
             print(f"Save error: {e}")
     
@@ -1246,10 +1183,7 @@ class PokemonAI:
     
     def _save_memory(self):
         """Saves experience memory"""
-        memory_data = {
-            'memory': list(self.memory)[-20000:],
-            'priority': list(self.priority_memory)
-        }
+        memory_data = {'memory': list(self.memory)[-10000:]}
         self._safe_pickle_save(memory_data, self.memory_path, f"Memory ({len(memory_data['memory'])} experiences)")
     
     def _load_memory(self):
@@ -1258,13 +1192,9 @@ class PokemonAI:
         if memory_data is None:
             return
             
-        for exp in memory_data.get('memory', [])[-10000:]:
+        for exp in memory_data.get('memory', [])[-5000:]:
             if len(exp) == 5 and isinstance(exp[0], np.ndarray):
                 self.memory.append(exp)
-        
-        for exp in memory_data.get('priority', []):
-            if len(exp) == 5 and isinstance(exp[0], np.ndarray):
-                self.priority_memory.append(exp)
         
         print(f"Memory loaded: {len(self.memory)} experiences")
     
@@ -1372,35 +1302,27 @@ class PokemonAI:
         print("Save completed!")
     
     def _print_stats(self):
-        """Prints periodic statistics with memory data"""
+        """Prints multi-agent statistics"""
         avg_reward = np.mean(list(self.reward_history)[-100:]) if len(self.reward_history) >= 100 else 0
         avg_loss = np.mean(list(self.loss_history)) if len(self.loss_history) > 0 else 0
         
-       
         memory_state = self.memory_reader.get_current_state()
         
         print(f"\nFrame {self.frame_count:,} | State: {self.current_game_state}")
         print(f"  Total reward: {self.total_reward:.2f} (avg: {avg_reward:.3f})")
-        print(f"   Loss: {avg_loss:.4f} | ε: {self.epsilon:.3f}")
+        print(f"  Loss: {avg_loss:.4f} | ε: {self.epsilon:.3f}")
+        
+        # MULTI-AGENT STATUS
+        if torch_available and hasattr(self, 'multi_agent'):
+            print(f"  MULTI-AGENT: 3 agenti specializzati (Explorer/Battle/Menu)")
+            print(f"  Agente attivo: {self.current_game_state.upper()}")
         
         if memory_state:
-            print(f"   Money: ¥{memory_state.get('player_money', 0)}")
-            print(f"   Badges: {memory_state.get('badges', 0)}/8")
-            print(f"   Pokedex: {memory_state.get('pokedex_owned', 0)}/{memory_state.get('pokedex_seen', 0)}")
-            print(f"   Team: {memory_state.get('party_count', 0)} Pokemon")
-            
-           
-            levels = memory_state.get('party_levels', [])
-            if any(levels):
-                non_zero_levels = [l for l in levels if l > 0]
-                if non_zero_levels:
-                    print(f"   Levels: {non_zero_levels}")
-        
-        print(f"   Locations visited: {len(self.visited_states)}")
+            print(f"  Badges: {memory_state.get('badges', 0)}/8 | Pokemon: {memory_state.get('pokedex_owned', 0)}")
         
         if self.total_reward > self.best_reward:
             self.best_reward = self.total_reward
-            print(f"   NEW RECORD!")
+            print(f"  NEW RECORD!")
     
     def _print_report(self):
         """Detailed report"""
@@ -1463,11 +1385,15 @@ class PokemonAI:
             print(f"  Total items: {final_state.get('items_count', 0)}")
             print(f"  Last position: Map {final_state.get('map_id', 0)}, X:{final_state.get('x_pos', 0)}, Y:{final_state.get('y_pos', 0)}")
         
+        print(f"\nMULTI-AGENT ARCHITECTURE:")
+        if torch_available and hasattr(self, 'multi_agent'):
+            print(f"  3 agenti specializzati:")
+            print(f"    - ExplorerDQN: Esplorazione")
+            print(f"    - BattleDQN: Combattimenti") 
+            print(f"    - MenuDQN: Navigazione menu")
+        
         print(f"\nAI STATISTICS:")
-        print(f"  States explored: {len(self.visited_states)}")
-        print(f"  Checkpoints saved: {len(self.checkpoint_states)}")
         print(f"  Experiences in memory: {len(self.memory)}")
-        print(f"  Priority experiences: {len(self.priority_memory)}")
         print(f"  Final epsilon: {self.epsilon:.3f}")
         
         print(f"\nSaved files:")
