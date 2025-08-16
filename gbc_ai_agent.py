@@ -824,6 +824,15 @@ class PokemonAI:
         
         if torch_available:
             self.multi_agent = PokemonMultiAgent(len(self.actions), self.device)
+            # Statistiche training per bilanciamento
+            self.training_stats = {
+                'explorer_count': 0,
+                'battle_count': 0,
+                'menu_count': 0,
+                'explorer_loss': [],
+                'battle_loss': [],
+                'menu_loss': []
+            }
         
         
         
@@ -1022,7 +1031,22 @@ class PokemonAI:
             battle_batch = []
             menu_batch = []
             
-            for exp in random.sample(self.memory, min(self.batch_size * 3, len(self.memory))):
+            # Calcola bilanciamento per training equo
+            total_training = (self.training_stats['explorer_count'] + 
+                            self.training_stats['battle_count'] + 
+                            self.training_stats['menu_count'])
+            
+            # Determina priorità per bilanciamento
+            min_trained = min(self.training_stats['explorer_count'],
+                            self.training_stats['battle_count'], 
+                            self.training_stats['menu_count'])
+            
+            priority_explorer = self.training_stats['explorer_count'] == min_trained
+            priority_battle = self.training_stats['battle_count'] == min_trained
+            priority_menu = self.training_stats['menu_count'] == min_trained
+            
+            sample_size = min(self.batch_size * 4, len(self.memory))
+            for exp in random.sample(self.memory, sample_size):
                 if len(exp) >= 6:  # Include game_state
                     game_state = exp[5]
                     if game_state == "battle":
@@ -1035,24 +1059,68 @@ class PokemonAI:
             loss_total = 0
             losses_count = 0
             
-            # Addestra ogni agente con le sue esperienze
-            if len(explorer_batch) >= 4:
+            # Addestra agenti con priorità per bilanciamento
+            # Prima addestra gli agenti con meno training
+            if priority_explorer and len(explorer_batch) >= 4:
                 loss = self.multi_agent.train_agent(explorer_batch[:self.batch_size], "exploring")
                 if loss:
                     loss_total += loss
                     losses_count += 1
+                    self.training_stats['explorer_count'] += 1
+                    self.training_stats['explorer_loss'].append(loss)
+                    if len(self.training_stats['explorer_loss']) > 100:
+                        self.training_stats['explorer_loss'].pop(0)
             
-            if len(battle_batch) >= 4:
+            if priority_battle and len(battle_batch) >= 4:
                 loss = self.multi_agent.train_agent(battle_batch[:self.batch_size], "battle")
                 if loss:
                     loss_total += loss
                     losses_count += 1
+                    self.training_stats['battle_count'] += 1
+                    self.training_stats['battle_loss'].append(loss)
+                    if len(self.training_stats['battle_loss']) > 100:
+                        self.training_stats['battle_loss'].pop(0)
             
-            if len(menu_batch) >= 4:
+            if priority_menu and len(menu_batch) >= 4:
                 loss = self.multi_agent.train_agent(menu_batch[:self.batch_size], "menu")
                 if loss:
                     loss_total += loss
                     losses_count += 1
+                    self.training_stats['menu_count'] += 1
+                    self.training_stats['menu_loss'].append(loss)
+                    if len(self.training_stats['menu_loss']) > 100:
+                        self.training_stats['menu_loss'].pop(0)
+            
+            # Poi addestra gli altri se ci sono batch disponibili
+            if not priority_explorer and len(explorer_batch) >= 4:
+                loss = self.multi_agent.train_agent(explorer_batch[:self.batch_size], "exploring")
+                if loss:
+                    loss_total += loss
+                    losses_count += 1
+                    self.training_stats['explorer_count'] += 1
+                    self.training_stats['explorer_loss'].append(loss)
+                    if len(self.training_stats['explorer_loss']) > 100:
+                        self.training_stats['explorer_loss'].pop(0)
+            
+            if not priority_battle and len(battle_batch) >= 4:
+                loss = self.multi_agent.train_agent(battle_batch[:self.batch_size], "battle")
+                if loss:
+                    loss_total += loss
+                    losses_count += 1
+                    self.training_stats['battle_count'] += 1
+                    self.training_stats['battle_loss'].append(loss)
+                    if len(self.training_stats['battle_loss']) > 100:
+                        self.training_stats['battle_loss'].pop(0)
+            
+            if not priority_menu and len(menu_batch) >= 4:
+                loss = self.multi_agent.train_agent(menu_batch[:self.batch_size], "menu")
+                if loss:
+                    loss_total += loss
+                    losses_count += 1
+                    self.training_stats['menu_count'] += 1
+                    self.training_stats['menu_loss'].append(loss)
+                    if len(self.training_stats['menu_loss']) > 100:
+                        self.training_stats['menu_loss'].pop(0)
             
             if losses_count > 0:
                 avg_loss = loss_total / losses_count
@@ -1313,9 +1381,35 @@ class PokemonAI:
         print(f"  Loss: {avg_loss:.4f} | ε: {self.epsilon:.3f}")
         
         # MULTI-AGENT STATUS
-        if torch_available and hasattr(self, 'multi_agent'):
+        if torch_available and hasattr(self, 'multi_agent') and hasattr(self, 'training_stats'):
             print(f"  MULTI-AGENT: 3 agenti specializzati (Explorer/Battle/Menu)")
             print(f"  Agente attivo: {self.current_game_state.upper()}")
+            
+            # Statistiche training bilanciamento
+            total_training = (self.training_stats['explorer_count'] + 
+                            self.training_stats['battle_count'] + 
+                            self.training_stats['menu_count'])
+            
+            if total_training > 0:
+                exp_pct = self.training_stats['explorer_count'] / total_training * 100
+                bat_pct = self.training_stats['battle_count'] / total_training * 100
+                men_pct = self.training_stats['menu_count'] / total_training * 100
+                
+                print(f"  Training bilanciamento:")
+                print(f"    Explorer: {self.training_stats['explorer_count']} ({exp_pct:.1f}%)")
+                print(f"    Battle: {self.training_stats['battle_count']} ({bat_pct:.1f}%)")
+                print(f"    Menu: {self.training_stats['menu_count']} ({men_pct:.1f}%)")
+                
+                # Loss averages
+                if self.training_stats['explorer_loss']:
+                    exp_loss = np.mean(self.training_stats['explorer_loss'][-20:])
+                    print(f"    Explorer Loss: {exp_loss:.4f}")
+                if self.training_stats['battle_loss']:
+                    bat_loss = np.mean(self.training_stats['battle_loss'][-20:])
+                    print(f"    Battle Loss: {bat_loss:.4f}")
+                if self.training_stats['menu_loss']:
+                    men_loss = np.mean(self.training_stats['menu_loss'][-20:])
+                    print(f"    Menu Loss: {men_loss:.4f}")
         
         if memory_state:
             print(f"  Badges: {memory_state.get('badges', 0)}/8 | Pokemon: {memory_state.get('pokedex_owned', 0)}")
