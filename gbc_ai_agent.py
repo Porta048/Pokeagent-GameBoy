@@ -950,9 +950,21 @@ class PokemonAI:
             priority_battle = self.training_stats['battle_count'] == min_trained
             priority_menu = self.training_stats['menu_count'] == min_trained
             
-            # More efficient sampling: sample enough for each agent type
-            # Estimate we need ~batch_size per agent, so sample 2x to account for distribution
-            sample_size = min(self.batch_size * 2, len(self.memory))
+            # Adaptive sampling: adjust based on memory size and expected distribution
+            # Use statistical estimation to sample more efficiently
+            memory_size = len(self.memory)
+            
+            if memory_size >= self.batch_size * 10:
+                # Large memory: use conservative 1.5x multiplier for efficiency
+                sample_multiplier = 1.5
+            elif memory_size >= self.batch_size * 5:
+                # Medium memory: use moderate 1.8x multiplier
+                sample_multiplier = 1.8
+            else:
+                # Small memory: use higher 2.2x multiplier to ensure sufficient samples
+                sample_multiplier = 2.2
+            
+            sample_size = min(int(self.batch_size * sample_multiplier), memory_size)
             sampled_experiences = random.sample(self.memory, sample_size)
             
             for exp in sampled_experiences:
@@ -1148,10 +1160,6 @@ class PokemonAI:
             print("Multi-agent models saved!")
         except Exception as e:
             print(f"Save error: {e}")
-    
-    def _get_screen_hash(self, screen_tensor):
-        """Calculates screen hash for tracking visited states"""
-        return self._safe_get_screen_hash(screen_tensor)
     
     def choose_action(self, state):
         """Multi-Agent action selection"""
