@@ -109,10 +109,6 @@ class PokemonMemoryReader:
             'battle_turns': 0,
             'items_count': 0
         }
-        
-        
-        self.last_memory_read = 0
-        self.memory_cache = {}
     
     def _detect_game_type(self):
         """Detects which Pokemon game is loaded"""
@@ -496,10 +492,55 @@ class PokemonStateDetector:
         
         return contrast > 30 and has_box
     
+    def detect_blocked_movement(self, current_screen, previous_screen, movement_threshold=0.02):
+        """Detects if the player movement is blocked or stuck"""
+        if previous_screen is None:
+            return False
+        
+        # Calculate screen difference to detect movement
+        diff = np.mean(np.abs(current_screen - previous_screen))
+        
+        # Movement is considered blocked if screen difference is below threshold
+        is_blocked = diff < movement_threshold
+        
+        # Additional check: look for specific blocked movement patterns
+        # Check for repeating screen patterns that indicate collision with walls/objects
+        center_region = current_screen[60:100, 70:90]  # Player area
+        center_variance = np.var(center_region)
+        
+        # Very low variance in center region might indicate player is stuck against wall
+        stuck_against_wall = center_variance < 50
+        
+        return is_blocked or stuck_against_wall
+    
 
 
 
 if torch_available:
+    def calculate_conv_output_size(input_height, input_width, conv_layers):
+        """
+        Calculate the output size after a series of convolutional layers
+        
+        Args:
+            input_height: Initial height (e.g., 144)
+            input_width: Initial width (e.g., 160) 
+            conv_layers: List of (kernel_size, stride) tuples
+        
+        Returns:
+            (output_height, output_width, linear_input_size_for_last_channels)
+        """
+        h, w = input_height, input_width
+        
+        for kernel_size, stride in conv_layers:
+            h = (h - kernel_size) // stride + 1
+            w = (w - kernel_size) // stride + 1
+        
+        return h, w
+    
+    # Pre-calculated common architectures
+    STANDARD_CONV_DIMS = calculate_conv_output_size(144, 160, [(8, 4), (4, 2), (3, 1)])  # For Explorer & Battle DQN
+    MENU_CONV_DIMS = calculate_conv_output_size(144, 160, [(4, 2), (3, 2)])  # For Menu DQN
+    
     class ExplorerDQN(nn.Module):
         """DQN specializzato per esplorazione"""
         def __init__(self, n_actions):
@@ -508,8 +549,7 @@ if torch_available:
             self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
             self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
             
-            convh = ((((144 - 8) // 4 + 1) - 4) // 2 + 1) - 3 + 1
-            convw = ((((160 - 8) // 4 + 1) - 4) // 2 + 1) - 3 + 1
+            convh, convw = STANDARD_CONV_DIMS
             linear_input_size = convh * convw * 64
             
             self.fc1 = nn.Linear(linear_input_size, 256)
@@ -531,8 +571,7 @@ if torch_available:
             self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
             self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
             
-            convh = ((((144 - 8) // 4 + 1) - 4) // 2 + 1) - 3 + 1
-            convw = ((((160 - 8) // 4 + 1) - 4) // 2 + 1) - 3 + 1
+            convh, convw = STANDARD_CONV_DIMS
             linear_input_size = convh * convw * 64
             
             self.fc1 = nn.Linear(linear_input_size, 512)
@@ -555,8 +594,7 @@ if torch_available:
             self.conv1 = nn.Conv2d(1, 16, kernel_size=4, stride=2)
             self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=2)
             
-            convh = (((144 - 4) // 2 + 1) - 3) // 2 + 1
-            convw = (((160 - 4) // 2 + 1) - 3) // 2 + 1
+            convh, convw = MENU_CONV_DIMS
             linear_input_size = convh * convw * 32
             
             self.fc1 = nn.Linear(linear_input_size, 128)
@@ -684,60 +722,6 @@ if torch_available:
                 
             for target_param, param in zip(self.menu_target.parameters(), self.menu_agent.parameters()):
                 target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
-
-    class PokemonDQN(nn.Module):
-        """Deep Q-Network optimized for Pokemon"""
-        def __init__(self, n_actions):
-            super(PokemonDQN, self).__init__()
-            
-           
-            self.conv1 = nn.Conv2d(1, 32, kernel_size=8, stride=4)
-            self.bn1 = nn.BatchNorm2d(32)
-            self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
-            self.bn2 = nn.BatchNorm2d(64)
-            self.conv3 = nn.Conv2d(64, 128, kernel_size=3, stride=1)
-            self.bn3 = nn.BatchNorm2d(128)
-            
-           
-            def conv2d_size_out(size, kernel_size, stride):
-                return (size - kernel_size) // stride + 1
-            
-            convh = conv2d_size_out(conv2d_size_out(conv2d_size_out(144, 8, 4), 4, 2), 3, 1)
-            convw = conv2d_size_out(conv2d_size_out(conv2d_size_out(160, 8, 4), 4, 2), 3, 1)
-            linear_input_size = convh * convw * 128
-            
-            
-            self.fc1 = nn.Linear(linear_input_size, 512)
-            self.fc2 = nn.Linear(512, 512)
-            self.fc3 = nn.Linear(512, 256)
-            self.fc4 = nn.Linear(256, n_actions)
-            
-            
-            self.value_stream = nn.Linear(256, 1)
-            self.advantage_stream = nn.Linear(256, n_actions)
-            
-            self.dropout = nn.Dropout(0.2)
-        
-        def forward(self, x):
-            x = F.relu(self.bn1(self.conv1(x)))
-            x = F.relu(self.bn2(self.conv2(x)))
-            x = F.relu(self.bn3(self.conv3(x)))
-            x = x.view(x.size(0), -1)
-            
-            x = F.relu(self.fc1(x))
-            x = self.dropout(x)
-            x = F.relu(self.fc2(x))
-            x = self.dropout(x)
-            x = F.relu(self.fc3(x))
-            
-            
-            value = self.value_stream(x)
-            advantage = self.advantage_stream(x)
-            
-         
-            q_values = value + (advantage - advantage.mean(dim=1, keepdim=True))
-            
-            return q_values
 
 
 class PokemonAI:
@@ -885,6 +869,170 @@ class PokemonAI:
             print(f"  - Pokemon in party: {initial_state.get('party_count', 0)}")
             print(f"  - Pokedex: {initial_state.get('pokedex_owned', 0)}/{initial_state.get('pokedex_seen', 0)}")
     
+    def _has_torch_multiagent(self):
+        """Check if torch and multi-agent are available"""
+        return torch_available and hasattr(self, 'multi_agent')
+    
+    def _safe_choose_action(self, state, game_state):
+        """Safely choose action with torch availability check"""
+        if self._has_torch_multiagent():
+            return self.multi_agent.choose_action(state, game_state, self.epsilon)
+        else:
+            return random.randint(0, len(self.actions) - 1)
+    
+    def _safe_replay(self):
+        """Safely perform replay training with torch availability check"""
+        if not self._has_torch_multiagent() or len(self.memory) < self.batch_size:
+            return
+        return self._do_replay_training()
+    
+    def _safe_update_target_model(self):
+        """Safely update target networks with torch availability check"""
+        if self._has_torch_multiagent():
+            self.multi_agent.update_target_networks()
+    
+    def _safe_save_model(self):
+        """Safely save model with torch availability check"""
+        if self._has_torch_multiagent():
+            self._do_model_save()
+    
+    def _is_torch_tensor(self, tensor):
+        """Check if object is a torch tensor"""
+        return torch_available and isinstance(tensor, torch.Tensor)
+    
+    def _safe_tensor_diff(self, screen_tensor, previous_screen):
+        """Safely calculate tensor difference"""
+        if self._is_torch_tensor(screen_tensor):
+            return torch.abs(screen_tensor - previous_screen).mean().item()
+        else:
+            return np.mean(np.abs(screen_tensor - previous_screen))
+    
+    def _safe_get_screen_hash(self, screen_tensor):
+        """Safely get screen hash handling torch tensors"""
+        if self._is_torch_tensor(screen_tensor):
+            small = F.interpolate(screen_tensor.unsqueeze(0), size=(36, 40), mode='bilinear')
+            screen_bytes = small.cpu().numpy().tobytes()
+        else:
+            small = cv2.resize(screen_tensor, (40, 36))
+            screen_bytes = small.tobytes()
+        
+        return hashlib.md5(screen_bytes).hexdigest()
+    
+    def _safe_tensor_to_numpy(self, state, next_state):
+        """Safely convert tensors to numpy arrays"""
+        if self._is_torch_tensor(state):
+            state_np = state.squeeze(0).cpu().numpy()
+            next_state_np = next_state.squeeze(0).cpu().numpy()
+        else:
+            state_np = state
+            next_state_np = next_state
+        return state_np, next_state_np
+    
+    def _do_replay_training(self):
+        """Perform the actual replay training logic"""
+        try:
+            # Raggruppa esperienze per game state
+            explorer_batch = []
+            battle_batch = []
+            menu_batch = []
+            
+            # Calcola bilanciamento per training equo
+            total_training = (self.training_stats['explorer_count'] + 
+                            self.training_stats['battle_count'] + 
+                            self.training_stats['menu_count'])
+            
+            # Determina priorità per bilanciamento
+            min_trained = min(self.training_stats['explorer_count'],
+                            self.training_stats['battle_count'], 
+                            self.training_stats['menu_count'])
+            
+            priority_explorer = self.training_stats['explorer_count'] == min_trained
+            priority_battle = self.training_stats['battle_count'] == min_trained
+            priority_menu = self.training_stats['menu_count'] == min_trained
+            
+            # More efficient sampling: sample enough for each agent type
+            # Estimate we need ~batch_size per agent, so sample 2x to account for distribution
+            sample_size = min(self.batch_size * 2, len(self.memory))
+            sampled_experiences = random.sample(self.memory, sample_size)
+            
+            for exp in sampled_experiences:
+                if len(exp) >= 6:  # Include game_state
+                    game_state = exp[5]
+                    # Stop collecting when we have enough for each batch
+                    if game_state == "battle" and len(battle_batch) < self.batch_size:
+                        battle_batch.append(exp)
+                    elif game_state == "menu" and len(menu_batch) < self.batch_size:
+                        menu_batch.append(exp)
+                    elif len(explorer_batch) < self.batch_size:
+                        explorer_batch.append(exp)
+                
+                # Early termination if all batches are full
+                if (len(explorer_batch) >= self.batch_size and 
+                    len(battle_batch) >= self.batch_size and 
+                    len(menu_batch) >= self.batch_size):
+                    break
+            
+            loss_total = 0
+            losses_count = 0
+            
+            # Configuration for each agent type
+            agent_configs = [
+                {
+                    'name': 'explorer',
+                    'batch': explorer_batch,
+                    'agent_type': 'exploring',
+                    'priority': priority_explorer,
+                    'count_key': 'explorer_count',
+                    'loss_key': 'explorer_loss'
+                },
+                {
+                    'name': 'battle',
+                    'batch': battle_batch,
+                    'agent_type': 'battle',
+                    'priority': priority_battle,
+                    'count_key': 'battle_count',
+                    'loss_key': 'battle_loss'
+                },
+                {
+                    'name': 'menu',
+                    'batch': menu_batch,
+                    'agent_type': 'menu',
+                    'priority': priority_menu,
+                    'count_key': 'menu_count',
+                    'loss_key': 'menu_loss'
+                }
+            ]
+            
+            # Train agents with priority balancing - priority agents first
+            for priority_first in [True, False]:
+                for config in agent_configs:
+                    should_train = (config['priority'] if priority_first else not config['priority'])
+                    
+                    if should_train and len(config['batch']) >= 4:
+                        loss = self.multi_agent.train_agent(
+                            config['batch'][:self.batch_size], 
+                            config['agent_type']
+                        )
+                        
+                        if loss:
+                            loss_total += loss
+                            losses_count += 1
+                            self.training_stats[config['count_key']] += 1
+                            self.training_stats[config['loss_key']].append(loss)
+                            
+                            # Keep only last 100 losses
+                            if len(self.training_stats[config['loss_key']]) > 100:
+                                self.training_stats[config['loss_key']].pop(0)
+            
+            if losses_count > 0:
+                avg_loss = loss_total / losses_count
+                self.loss_history.append(avg_loss)
+            
+            if self.epsilon > self.epsilon_min:
+                self.epsilon *= self.epsilon_decay
+                
+        except Exception as e:
+            print(f"Multi-agent training error: {e}")
     
     def _get_screen_tensor(self):
         """Gets screen as PyTorch tensor"""
@@ -894,7 +1042,7 @@ class PokemonAI:
         self.last_screen_array = gray.copy()
         normalized = gray.astype(np.float32) / 255.0
         
-        if torch_available and hasattr(self, 'multi_agent'):
+        if self._has_torch_multiagent():
             tensor = torch.from_numpy(normalized).unsqueeze(0)
             return tensor.to(self.device)
         return normalized
@@ -918,7 +1066,7 @@ class PokemonAI:
         return self.current_game_state
     
     def _calculate_reward(self, screen_tensor, previous_screen, action):
-        """Curriculum Learning reward system"""
+        """Advanced reward system for Pokemon gameplay"""
         reward = 0
         
         if hasattr(self, 'last_screen_array'):
@@ -937,10 +1085,7 @@ class PokemonAI:
             self.pokemon_caught = memory_state.get('pokedex_owned', 0)
         
         if previous_screen is not None:
-            if torch_available and isinstance(screen_tensor, torch.Tensor):
-                diff = torch.abs(screen_tensor - previous_screen).mean().item()
-            else:
-                diff = np.mean(np.abs(screen_tensor - previous_screen))
+            diff = self._safe_tensor_diff(screen_tensor, previous_screen)
             
             if diff > 0.02:
                 reward += 1.0
@@ -949,9 +1094,6 @@ class PokemonAI:
                 self.stuck_counter += 1
                 reward -= 0.1
         
-        # CURRICULUM LEARNING - Calcola reward basato sugli obiettivi correnti
-        if torch_available and hasattr(self, 'curriculum'):
-            reward = self.curriculum.calculate_curriculum_reward(reward, game_state, memory_state)
         
         self.reward_history.append(reward)
         self.total_reward += reward
@@ -959,6 +1101,11 @@ class PokemonAI:
         return reward
     
     
+    # =====================================================
+    # SAVE/LOAD SYSTEM - Persistence and Data Management
+    # =====================================================
+    
+    # --- Utility Methods ---
     def _safe_pickle_save(self, data, path, description="data"):
         """Safely save data with pickle"""
         try:
@@ -979,204 +1126,9 @@ class PokemonAI:
             print(f"{description} load error: {e}")
             return None
     
-    def _get_screen_hash(self, screen_tensor):
-        """Calculates screen hash for tracking visited states"""
-        if torch_available and isinstance(screen_tensor, torch.Tensor):
-           
-            small = F.interpolate(screen_tensor.unsqueeze(0), size=(36, 40), mode='bilinear')
-            screen_bytes = small.cpu().numpy().tobytes()
-        else:
-            
-            small = cv2.resize(screen_tensor, (40, 36))
-            screen_bytes = small.tobytes()
-        
-        return hashlib.md5(screen_bytes).hexdigest()
-    
-    def choose_action(self, state):
-        """Multi-Agent action selection"""
-        game_state = self.current_game_state if hasattr(self, 'current_game_state') else "exploring"
-        
-        # MULTI-AGENT ARCHITECTURE
-        if torch_available and hasattr(self, 'multi_agent'):
-            action = self.multi_agent.choose_action(state, game_state, self.epsilon)
-        else:
-            action = random.randint(0, len(self.actions) - 1)
-        
-        self.action_history.append(action)
-        return action
-    
-    
-    def remember(self, state, action, reward, next_state, done):
-        """Saves experience for multi-agent learning"""
-        if torch_available and isinstance(state, torch.Tensor):
-            state_np = state.squeeze(0).cpu().numpy()
-            next_state_np = next_state.squeeze(0).cpu().numpy()
-        else:
-            state_np = state
-            next_state_np = next_state
-        
-        # Aggiungi game_state all'esperienza
-        game_state = self.current_game_state if hasattr(self, 'current_game_state') else "exploring"
-        experience = (state_np, action, reward, next_state_np, done, game_state)
-        self.memory.append(experience)
-    
-    def replay(self):
-        """Multi-agent replay training"""
-        if not (torch_available and hasattr(self, 'multi_agent')) or len(self.memory) < self.batch_size:
-            return
-        
-        try:
-            # Raggruppa esperienze per game state
-            explorer_batch = []
-            battle_batch = []
-            menu_batch = []
-            
-            # Calcola bilanciamento per training equo
-            total_training = (self.training_stats['explorer_count'] + 
-                            self.training_stats['battle_count'] + 
-                            self.training_stats['menu_count'])
-            
-            # Determina priorità per bilanciamento
-            min_trained = min(self.training_stats['explorer_count'],
-                            self.training_stats['battle_count'], 
-                            self.training_stats['menu_count'])
-            
-            priority_explorer = self.training_stats['explorer_count'] == min_trained
-            priority_battle = self.training_stats['battle_count'] == min_trained
-            priority_menu = self.training_stats['menu_count'] == min_trained
-            
-            sample_size = min(self.batch_size * 4, len(self.memory))
-            for exp in random.sample(self.memory, sample_size):
-                if len(exp) >= 6:  # Include game_state
-                    game_state = exp[5]
-                    if game_state == "battle":
-                        battle_batch.append(exp)
-                    elif game_state == "menu":
-                        menu_batch.append(exp)
-                    else:
-                        explorer_batch.append(exp)
-            
-            loss_total = 0
-            losses_count = 0
-            
-            # Addestra agenti con priorità per bilanciamento
-            # Prima addestra gli agenti con meno training
-            if priority_explorer and len(explorer_batch) >= 4:
-                loss = self.multi_agent.train_agent(explorer_batch[:self.batch_size], "exploring")
-                if loss:
-                    loss_total += loss
-                    losses_count += 1
-                    self.training_stats['explorer_count'] += 1
-                    self.training_stats['explorer_loss'].append(loss)
-                    if len(self.training_stats['explorer_loss']) > 100:
-                        self.training_stats['explorer_loss'].pop(0)
-            
-            if priority_battle and len(battle_batch) >= 4:
-                loss = self.multi_agent.train_agent(battle_batch[:self.batch_size], "battle")
-                if loss:
-                    loss_total += loss
-                    losses_count += 1
-                    self.training_stats['battle_count'] += 1
-                    self.training_stats['battle_loss'].append(loss)
-                    if len(self.training_stats['battle_loss']) > 100:
-                        self.training_stats['battle_loss'].pop(0)
-            
-            if priority_menu and len(menu_batch) >= 4:
-                loss = self.multi_agent.train_agent(menu_batch[:self.batch_size], "menu")
-                if loss:
-                    loss_total += loss
-                    losses_count += 1
-                    self.training_stats['menu_count'] += 1
-                    self.training_stats['menu_loss'].append(loss)
-                    if len(self.training_stats['menu_loss']) > 100:
-                        self.training_stats['menu_loss'].pop(0)
-            
-            # Poi addestra gli altri se ci sono batch disponibili
-            if not priority_explorer and len(explorer_batch) >= 4:
-                loss = self.multi_agent.train_agent(explorer_batch[:self.batch_size], "exploring")
-                if loss:
-                    loss_total += loss
-                    losses_count += 1
-                    self.training_stats['explorer_count'] += 1
-                    self.training_stats['explorer_loss'].append(loss)
-                    if len(self.training_stats['explorer_loss']) > 100:
-                        self.training_stats['explorer_loss'].pop(0)
-            
-            if not priority_battle and len(battle_batch) >= 4:
-                loss = self.multi_agent.train_agent(battle_batch[:self.batch_size], "battle")
-                if loss:
-                    loss_total += loss
-                    losses_count += 1
-                    self.training_stats['battle_count'] += 1
-                    self.training_stats['battle_loss'].append(loss)
-                    if len(self.training_stats['battle_loss']) > 100:
-                        self.training_stats['battle_loss'].pop(0)
-            
-            if not priority_menu and len(menu_batch) >= 4:
-                loss = self.multi_agent.train_agent(menu_batch[:self.batch_size], "menu")
-                if loss:
-                    loss_total += loss
-                    losses_count += 1
-                    self.training_stats['menu_count'] += 1
-                    self.training_stats['menu_loss'].append(loss)
-                    if len(self.training_stats['menu_loss']) > 100:
-                        self.training_stats['menu_loss'].pop(0)
-            
-            if losses_count > 0:
-                avg_loss = loss_total / losses_count
-                self.loss_history.append(avg_loss)
-            
-            if self.epsilon > self.epsilon_min:
-                self.epsilon *= self.epsilon_decay
-                
-        except Exception as e:
-            print(f"Multi-agent training error: {e}")
-    
-    def update_target_model(self):
-        """Update target networks for multi-agent"""
-        if torch_available and hasattr(self, 'multi_agent'):
-            self.multi_agent.update_target_networks()
-    
-    
-    def _save_checkpoint(self, state):
-        """Saves checkpoint for backtracking"""
-        checkpoint_id = len(self.checkpoint_states)
-        self.checkpoint_states[checkpoint_id] = {
-            'state': state,
-            'frame': self.frame_count,
-            'reward': self.total_reward,
-            'position': len(self.visited_states)
-        }
-        self.last_checkpoint = checkpoint_id
-        print(f"Checkpoint #{checkpoint_id} saved!")
-    
-    def _load_checkpoints(self):
-        """Loads saved checkpoints"""
-        data = self._safe_pickle_load(self.checkpoints_path, "Checkpoints")
-        self.checkpoint_states = data if data is not None else {}
-        if self.checkpoint_states:
-            print(f"Loaded {len(self.checkpoint_states)} checkpoints")
-    
-    def save_game_state(self, slot=0):
-        """Saves current game state"""
-        state_path = os.path.join(self.save_dir, f"savestate_{slot}.state")
-        with open(state_path, "wb") as f:
-            f.write(self.pyboy.save_state())
-        print(f"Savestate saved in slot {slot}")
-    
-    def load_game_state(self, slot=0):
-        """Loads a saved game state"""
-        state_path = os.path.join(self.save_dir, f"savestate_{slot}.state")
-        if os.path.exists(state_path):
-            with open(state_path, "rb") as f:
-                self.pyboy.load_state(f)
-            print(f"Savestate loaded from slot {slot}")
-    
-    def _save_model(self):
-        """Saves multi-agent models"""
-        if not (torch_available and hasattr(self, 'multi_agent')):
-            return
-            
+    # --- Model Save/Load Methods ---
+    def _do_model_save(self):
+        """Perform the actual model saving logic"""
         try:
             checkpoint = {
                 'explorer_state': self.multi_agent.explorer_agent.state_dict(),
@@ -1197,6 +1149,80 @@ class PokemonAI:
         except Exception as e:
             print(f"Save error: {e}")
     
+    def _get_screen_hash(self, screen_tensor):
+        """Calculates screen hash for tracking visited states"""
+        return self._safe_get_screen_hash(screen_tensor)
+    
+    def choose_action(self, state):
+        """Multi-Agent action selection"""
+        game_state = self.current_game_state if hasattr(self, 'current_game_state') else "exploring"
+        
+        # MULTI-AGENT ARCHITECTURE
+        action = self._safe_choose_action(state, game_state)
+        
+        self.action_history.append(action)
+        return action
+    
+    
+    def remember(self, state, action, reward, next_state, done):
+        """Saves experience for multi-agent learning"""
+        state_np, next_state_np = self._safe_tensor_to_numpy(state, next_state)
+        
+        # Aggiungi game_state all'esperienza
+        game_state = self.current_game_state if hasattr(self, 'current_game_state') else "exploring"
+        experience = (state_np, action, reward, next_state_np, done, game_state)
+        self.memory.append(experience)
+    
+    def replay(self):
+        """Multi-agent replay training"""
+        self._safe_replay()
+    
+    def update_target_model(self):
+        """Update target networks for multi-agent"""
+        self._safe_update_target_model()
+    
+    
+    # --- Checkpoint Save/Load Methods ---
+    def _save_checkpoint(self, state):
+        """Saves checkpoint for backtracking"""
+        checkpoint_id = len(self.checkpoint_states)
+        self.checkpoint_states[checkpoint_id] = {
+            'state': state,
+            'frame': self.frame_count,
+            'reward': self.total_reward,
+            'position': len(self.visited_states)
+        }
+        self.last_checkpoint = checkpoint_id
+        print(f"Checkpoint #{checkpoint_id} saved!")
+    
+    def _load_checkpoints(self):
+        """Loads saved checkpoints"""
+        data = self._safe_pickle_load(self.checkpoints_path, "Checkpoints")
+        self.checkpoint_states = data if data is not None else {}
+        if self.checkpoint_states:
+            print(f"Loaded {len(self.checkpoint_states)} checkpoints")
+    
+    # --- Game State Save/Load Methods ---
+    def save_game_state(self, slot=0):
+        """Saves current game state"""
+        state_path = os.path.join(self.save_dir, f"savestate_{slot}.state")
+        with open(state_path, "wb") as f:
+            f.write(self.pyboy.save_state())
+        print(f"Savestate saved in slot {slot}")
+    
+    def load_game_state(self, slot=0):
+        """Loads a saved game state"""
+        state_path = os.path.join(self.save_dir, f"savestate_{slot}.state")
+        if os.path.exists(state_path):
+            with open(state_path, "rb") as f:
+                self.pyboy.load_state(f)
+            print(f"Savestate loaded from slot {slot}")
+    
+    def _save_model(self):
+        """Saves multi-agent models"""
+        self._safe_save_model()
+    
+    # --- Statistics and Memory Save/Load Methods ---
     def _load_stats(self):
         """Loads Pokemon statistics"""
         if os.path.exists(self.stats_path):
@@ -1361,6 +1387,7 @@ class PokemonAI:
             self.pyboy.stop()
             self._print_final_report()
     
+    # --- Comprehensive Save Method ---
     def _save_all(self):
         """Saves everything"""
         print("Complete save...")
@@ -1381,7 +1408,7 @@ class PokemonAI:
         print(f"  Loss: {avg_loss:.4f} | ε: {self.epsilon:.3f}")
         
         # MULTI-AGENT STATUS
-        if torch_available and hasattr(self, 'multi_agent') and hasattr(self, 'training_stats'):
+        if self._has_torch_multiagent() and hasattr(self, 'training_stats'):
             print(f"  MULTI-AGENT: 3 agenti specializzati (Explorer/Battle/Menu)")
             print(f"  Agente attivo: {self.current_game_state.upper()}")
             
@@ -1480,7 +1507,7 @@ class PokemonAI:
             print(f"  Last position: Map {final_state.get('map_id', 0)}, X:{final_state.get('x_pos', 0)}, Y:{final_state.get('y_pos', 0)}")
         
         print(f"\nMULTI-AGENT ARCHITECTURE:")
-        if torch_available and hasattr(self, 'multi_agent'):
+        if self._has_torch_multiagent():
             print(f"  3 agenti specializzati:")
             print(f"    - ExplorerDQN: Esplorazione")
             print(f"    - BattleDQN: Combattimenti") 
