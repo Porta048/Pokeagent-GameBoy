@@ -2,7 +2,7 @@
 
 AI agent that learns to play Pokemon Red/Blue using Deep Q-Learning with PyBoy.
 
-![Pokemon AI Screenshot](screenshot.png)
+![Pokemon AI Screenshot](Screenshot%202025-09-13%20221934.png)
 
 ## Quick Start
 
