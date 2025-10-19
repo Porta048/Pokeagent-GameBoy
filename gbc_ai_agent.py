@@ -1,4 +1,4 @@
-import os, sys, time, random, threading, json, pickle, hashlib
+import os, sys, time, threading, json, hashlib
 from typing import Union, List, Dict, Optional, Tuple, Any
 from collections import deque
 from functools import lru_cache
@@ -44,7 +44,10 @@ IPERPARAMETRI = {
     # PPO Hyperparameters
     'PPO_CLIP_EPSILON': 0.2,
     'PPO_VALUE_COEFF': 0.5,
-    'PPO_ENTROPY_COEFF': 0.01,
+    'PPO_ENTROPY_COEFF': 0.01,  # Dinamico - gestito da AdaptiveEntropyScheduler
+    'PPO_ENTROPY_START': 0.1,    # Aumentato da 0.05 a 0.1 (MOLTA più esplorazione)
+    'PPO_ENTROPY_END': 0.01,     # Aumentato da 0.005 a 0.01 (mantiene esplorazione)
+    'PPO_ENTROPY_DECAY_FRAMES': 1000000,  # Aumentato da 500k a 1M (decay più lento)
     'PPO_GAE_LAMBDA': 0.95,
     'PPO_GAE_GAMMA': 0.99,
     'PPO_EPOCHS': 3,
@@ -53,17 +56,217 @@ IPERPARAMETRI = {
     'PPO_LR': 3e-4,
     'PPO_MAX_GRAD_NORM': 0.5,
     'FRAME_STACK': 4,
+    # Anti-Confusion System
+    'ANTI_LOOP_ENABLED': False,          # DISABILITATO - causava blocchi dell'agente
+    'ANTI_LOOP_BUFFER_SIZE': 100,        # Traccia ultimi 100 stati
+    'ANTI_LOOP_THRESHOLD': 8,            # Penalità se >8 stati simili
+    'ANTI_LOOP_PENALTY': -2.0,           # Penalità ridotta (era -5.0)
+    'ACTION_REPEAT_MAX': 10,             # Aumentato a 10 (era 5) - più permissivo
+    'ACTION_REPEAT_PENALTY': -1.0,       # Penalità ridotta (era -2.0)
     # Emulator Optimizations
-    'FRAMESKIP_BASE': 6,              # Base frameskip (4-8 recommended)
-    'FRAMESKIP_DIALOGUE': 3,          # Lower for dialogue (need to catch text)
-    'FRAMESKIP_BATTLE': 8,            # Higher for battle (faster)
-    'FRAMESKIP_EXPLORING': 6,         # Balanced for exploration
-    'FRAMESKIP_MENU': 4,              # Moderate for menu navigation
-    'RENDER_ENABLED': False,          # Disable rendering for speed
-    'PERFORMANCE_LOG_INTERVAL': 1000  # Log performance every N frames
+    'FRAMESKIP_BASE': 8,              # Aumentato per velocità (era 4)
+    'FRAMESKIP_DIALOGUE': 6,          # Aumentato (era 3)
+    'FRAMESKIP_BATTLE': 12,           # Aumentato (era 8)
+    'FRAMESKIP_EXPLORING': 10,        # Aumentato (era 6)
+    'FRAMESKIP_MENU': 8,              # Aumentato (era 4)
+    'TURN_BASED_MODE': False,         # True = ClaudePlayer style
+    'RENDER_ENABLED': True,           # True per visualizzazione completa
+    'RENDER_EVERY_N_FRAMES': 2,       # Renderizza ogni 2 frame (era 1) per velocità
+    'PERFORMANCE_LOG_INTERVAL': 1000, # Log performance every N frames
+    # Velocita Emulazione
+    'EMULATION_SPEED': 0              # 0=illimitata (era 1) per massima velocità
 }
 
 class ErroreAIPokemon(Exception): pass
+
+class AdaptiveEntropyScheduler:
+    """
+    Scheduler per entropy coefficient dinamico.
+    Riduce progressivamente l'esplorazione casuale man mano che l'agente impara.
+
+    Formula: entropy = start + (end - start) * min(1.0, frames / decay_frames)
+    """
+    def __init__(self):
+        self.start_entropy = IPERPARAMETRI['PPO_ENTROPY_START']
+        self.end_entropy = IPERPARAMETRI['PPO_ENTROPY_END']
+        self.decay_frames = IPERPARAMETRI['PPO_ENTROPY_DECAY_FRAMES']
+
+    def get_entropy(self, current_frame: int) -> float:
+        """Calcola entropy coefficient corrente basato sui frame."""
+        progress = min(1.0, current_frame / self.decay_frames)
+        entropy = self.start_entropy + (self.end_entropy - self.start_entropy) * progress
+        return entropy
+
+class AntiLoopMemoryBuffer:
+    """
+    Buffer per detection e prevenzione di loop comportamentali.
+    Traccia stati recenti e penalizza pattern ripetitivi.
+
+    Pattern Strategy: diversi detection algorithm per diversi tipi di loop.
+    """
+    def __init__(self):
+        self.buffer_size = IPERPARAMETRI['ANTI_LOOP_BUFFER_SIZE']
+        self.state_buffer = deque(maxlen=self.buffer_size)
+        self.action_history = deque(maxlen=20)  # Ultimi 20 azioni
+        self.position_history = deque(maxlen=50)  # Ultimi 50 posizioni
+
+    def add_state(self, pos_x: int, pos_y: int, id_mappa: int, action: int):
+        """Aggiungi stato corrente al buffer."""
+        state_key = (id_mappa, pos_x, pos_y)
+        self.state_buffer.append(state_key)
+        self.action_history.append(action)
+        self.position_history.append(state_key)
+
+    def detect_position_loop(self) -> bool:
+        """
+        Detecta loop di posizione (es. avanti-indietro ripetuto).
+        Returns True se l'agente è in un loop.
+        """
+        if len(self.state_buffer) < 20:
+            return False
+
+        # Conta occorrenze degli ultimi 20 stati (era 10)
+        recent_states = list(self.state_buffer)[-20:]
+        unique_states = set(recent_states)
+
+        # Se visita meno di 2 posizioni uniche negli ultimi 20 step = loop (era <3 in 10)
+        # Molto più permissivo
+        return len(unique_states) <= 2
+
+    def detect_action_loop(self) -> bool:
+        """
+        Detecta loop di azioni (es. premere A ripetutamente senza progresso).
+        Returns True se l'agente ripete la stessa azione troppo.
+        """
+        if len(self.action_history) < IPERPARAMETRI['ACTION_REPEAT_MAX']:
+            return False
+
+        recent_actions = list(self.action_history)[-IPERPARAMETRI['ACTION_REPEAT_MAX']:]
+        # Se le ultime N azioni sono identiche = loop
+        return len(set(recent_actions)) == 1
+
+    def detect_oscillation(self) -> bool:
+        """
+        Detecta oscillazione (es. su-giù-su-giù).
+        Returns True se pattern oscillatorio detectato.
+        """
+        if len(self.position_history) < 16:  # Aumentato da 8 a 16
+            return False
+
+        # Controlla se posizioni alternano tra 2 valori
+        recent_pos = list(self.position_history)[-16:]  # Aumentato da 8 a 16
+        unique_pos = set(recent_pos)
+
+        if len(unique_pos) == 2:
+            # Verifica alternanza perfetta per almeno 12 step (era 8)
+            alternating_count = sum(
+                1 for i in range(len(recent_pos)-1)
+                if recent_pos[i] != recent_pos[i+1]
+            )
+            # Solo se alterna per più del 90% dei casi (molto restrittivo)
+            return alternating_count >= 14  # 14 su 15 transizioni
+
+        return False
+
+    def calculate_loop_penalty(self) -> float:
+        """
+        Calcola penalità basata sui loop detectati.
+        Returns penalità negativa se loop detectato, 0 altrimenti.
+        """
+        penalty = 0.0
+
+        if self.detect_position_loop():
+            penalty += IPERPARAMETRI['ANTI_LOOP_PENALTY']
+
+        if self.detect_action_loop():
+            penalty += IPERPARAMETRI['ACTION_REPEAT_PENALTY']
+
+        if self.detect_oscillation():
+            penalty += IPERPARAMETRI['ANTI_LOOP_PENALTY'] * 0.5
+
+        return penalty
+
+    def get_exploration_bonus(self) -> float:
+        """
+        Bonus per comportamento esplorativo (opposto di loop).
+        Returns bonus positivo se l'agente esplora attivamente.
+        """
+        if len(self.state_buffer) < 20:
+            return 0.0
+
+        # Conta stati unici negli ultimi 20 step
+        recent_states = list(self.state_buffer)[-20:]
+        unique_ratio = len(set(recent_states)) / len(recent_states)
+
+        # Bonus proporzionale alla diversità di stati visitati (più facile da ottenere)
+        if unique_ratio > 0.6:  # >60% stati unici = ottima esplorazione (era 0.7)
+            return 1.5  # Ridotto da 2.0
+        elif unique_ratio > 0.4:  # >40% stati unici = buona esplorazione (era 0.5)
+            return 0.8  # Ridotto da 1.0
+
+        return 0.0
+
+class ContextAwareActionFilter:
+    """
+    Filtro intelligente per azioni basato sul contesto di gioco.
+    Riduce azioni irrilevanti in base allo stato corrente.
+
+    Pattern Strategy: diverse strategie di filtering per ogni game state.
+    """
+    # Action indices (matching self.actions in AgentePokemonAI)
+    ACTIONS = {
+        'NOOP': 0, 'UP': 1, 'DOWN': 2, 'LEFT': 3, 'RIGHT': 4,
+        'A': 5, 'B': 6, 'START': 7, 'SELECT': 8
+    }
+
+    @staticmethod
+    def get_action_mask(game_state: str) -> List[float]:
+        """
+        Restituisce maschera di probabilità per azioni valide nel contesto.
+        1.0 = azione utile, 0.7 = azione meno utile (molto più permissivo).
+
+        Questo non blocca azioni, ma riduce LEGGERMENTE la loro probabilità di selezione.
+        """
+        mask = [1.0] * 9  # Default: tutte le azioni hanno peso normale
+
+        if game_state == "battle":
+            # In battaglia: leggera preferenza ad A, frecce, B
+            mask[ContextAwareActionFilter.ACTIONS['NOOP']] = 0.7  # Era 0.3, molto più permissivo
+            mask[ContextAwareActionFilter.ACTIONS['START']] = 0.7
+            mask[ContextAwareActionFilter.ACTIONS['SELECT']] = 0.7
+
+        elif game_state == "menu":
+            # In menu: leggera preferenza ad A, B, frecce
+            mask[ContextAwareActionFilter.ACTIONS['NOOP']] = 0.8  # Era 0.5
+            mask[ContextAwareActionFilter.ACTIONS['START']] = 0.9  # Era 0.7
+            mask[ContextAwareActionFilter.ACTIONS['SELECT']] = 0.7  # Era 0.3
+
+        elif game_state == "dialogue":
+            # In dialogo: leggera preferenza ad A e B
+            mask[ContextAwareActionFilter.ACTIONS['UP']] = 0.7  # Era 0.2
+            mask[ContextAwareActionFilter.ACTIONS['DOWN']] = 0.7
+            mask[ContextAwareActionFilter.ACTIONS['LEFT']] = 0.7
+            mask[ContextAwareActionFilter.ACTIONS['RIGHT']] = 0.7
+            mask[ContextAwareActionFilter.ACTIONS['START']] = 0.7  # Era 0.3
+            mask[ContextAwareActionFilter.ACTIONS['SELECT']] = 0.7  # Era 0.2
+
+        elif game_state == "exploring":
+            # In esplorazione: tutte le azioni quasi uguali
+            mask[ContextAwareActionFilter.ACTIONS['NOOP']] = 0.8  # Era 0.4
+
+        return mask
+
+    @staticmethod
+    def apply_mask_to_logits(logits: 'torch.Tensor', mask: List[float]) -> 'torch.Tensor':
+        """
+        Applica maschera ai logits della policy.
+        Riduce logits per azioni meno utili nel contesto.
+        """
+        if TORCH_AVAILABLE:
+            mask_tensor = torch.tensor(mask, device=logits.device, dtype=logits.dtype)
+            # Log-space mask: logits * mask (equivalente a prob^mask in linear space)
+            return logits + torch.log(mask_tensor + 1e-8)
+        return logits
 
 class BufferTraiettorie:
     """Buffer per trajectories PPO con calcolo GAE."""
@@ -313,33 +516,71 @@ class LettoreMemoriaGioco:
             self.stato_precedente = stato_corrente.copy()
             return 0.0
 
-        ricompensa = 0.0
+        ricompensa_totale = 0.0
+        rewards_dettaglio = {}
 
         # Sistema reward multi-componente sofisticato
-        ricompensa += self._calcola_ricompense_medaglie(stato_corrente)
-        ricompensa += self._calcola_ricompense_pokemon(stato_corrente)
-        ricompensa += self._calcola_ricompense_livelli_bilanciato(stato_corrente)  # NEW: Balanced
-        ricompensa += self._calcola_ricompense_soldi(stato_corrente)
-        ricompensa += self._calcola_ricompense_esplorazione(stato_corrente)
-        ricompensa += self._calcola_ricompense_battaglia(stato_corrente)
+        r = self._calcola_ricompense_medaglie(stato_corrente)
+        if r != 0: rewards_dettaglio['medaglie'] = r
+        ricompensa_totale += r
 
-        # NEW: Advanced rewards
-        ricompensa += self._calcola_ricompense_event_flags(stato_corrente)  # Event flags
-        ricompensa += self._calcola_ricompense_navigation(stato_corrente)   # Navigation exploration
-        ricompensa += self._calcola_ricompense_healing(stato_corrente)      # Healing rewards
+        r = self._calcola_ricompense_pokemon(stato_corrente)
+        if r != 0: rewards_dettaglio['pokemon'] = r
+        ricompensa_totale += r
+
+        r = self._calcola_ricompense_livelli_bilanciato(stato_corrente)
+        if r != 0: rewards_dettaglio['livelli'] = r
+        ricompensa_totale += r
+
+        r = self._calcola_ricompense_soldi(stato_corrente)
+        if r != 0: rewards_dettaglio['soldi'] = r
+        ricompensa_totale += r
+
+        r = self._calcola_ricompense_esplorazione(stato_corrente)
+        if r != 0: rewards_dettaglio['esplorazione'] = r
+        ricompensa_totale += r
+
+        r = self._calcola_ricompense_battaglia(stato_corrente)
+        if r != 0: rewards_dettaglio['battaglia'] = r
+        ricompensa_totale += r
+
+        # Intrinsic Curiosity Module (ICM)
+        r = self.calcola_ricompensa_curiosity(stato_corrente)
+        if r != 0: rewards_dettaglio['curiosity'] = r
+        ricompensa_totale += r
+
+        # Advanced rewards
+        r = self._calcola_ricompense_event_flags(stato_corrente)
+        if r != 0: rewards_dettaglio['events'] = r
+        ricompensa_totale += r
+
+        r = self._calcola_ricompense_navigation(stato_corrente)
+        if r != 0: rewards_dettaglio['navigation'] = r
+        ricompensa_totale += r
+
+        r = self._calcola_ricompense_healing(stato_corrente)
+        if r != 0: rewards_dettaglio['healing'] = r
+        ricompensa_totale += r
+
+        # Log reward significativi
+        if rewards_dettaglio:
+            print(f"[REWARD] {rewards_dettaglio} = {ricompensa_totale:.2f}")
 
         self.stato_precedente = stato_corrente.copy()
-        return ricompensa
+        return ricompensa_totale
 
     def _calcola_ricompense_medaglie(self, s: Dict[str, Any]) -> float:
-        return 1000 if s.get('medaglie', 0) > self.stato_precedente.get('medaglie', 0) else 0
+        # Medaglie = progressione principale del gioco
+        return 2000 if s.get('medaglie', 0) > self.stato_precedente.get('medaglie', 0) else 0
 
     def _calcola_ricompense_pokemon(self, s: Dict[str, Any]) -> float:
         r = 0
         if s.get('pokedex_posseduti', 0) > self.stato_precedente.get('pokedex_posseduti', 0):
-            r += 100 * (s.get('pokedex_posseduti', 0) - self.stato_precedente.get('pokedex_posseduti', 0))
+            # Catturare Pokemon = obiettivo importante
+            r += 150 * (s.get('pokedex_posseduti', 0) - self.stato_precedente.get('pokedex_posseduti', 0))
         if s.get('pokedex_visti', 0) > self.stato_precedente.get('pokedex_visti', 0):
-            r += 10 * (s.get('pokedex_visti', 0) - self.stato_precedente.get('pokedex_visti', 0))
+            # Vedere nuovi Pokemon = esplorazione utile
+            r += 20 * (s.get('pokedex_visti', 0) - self.stato_precedente.get('pokedex_visti', 0))
         return r
 
     def _calcola_ricompense_livelli_bilanciato(self, s: Dict[str, Any]) -> float:
@@ -385,9 +626,11 @@ class LettoreMemoriaGioco:
         return min(diff / 100, 20) if diff > 0 else -20 if diff < -100 else 0
 
     def _calcola_ricompense_esplorazione(self, s: Dict[str, Any]) -> float:
-        r = 30 if s.get('id_mappa', 0) != self.stato_precedente.get('id_mappa', 0) else 0
+        # Reward maggiore per cambiare mappa (importante per progressione)
+        r = 80 if s.get('id_mappa', 0) != self.stato_precedente.get('id_mappa', 0) else 0
+        # Reward per movimento significativo (incoraggia esplorazione attiva)
         diff_pos = abs(s.get('pos_x', 0) - self.stato_precedente.get('pos_x', 0)) + abs(s.get('pos_y', 0) - self.stato_precedente.get('pos_y', 0))
-        return r + (2 if diff_pos > 5 else 0)
+        return r + (8 if diff_pos > 5 else 0)
 
     def _calcola_ricompense_battaglia(self, s: Dict[str, Any]) -> float:
         prev_battle = self.stato_precedente.get('in_battaglia', False)
@@ -398,7 +641,7 @@ class LettoreMemoriaGioco:
 
     def _calcola_ricompense_event_flags(self, s: Dict[str, Any]) -> float:
         """
-        Event Flags Reward: +2 per ogni evento completato (trainer battles, quest progress, gym badges).
+        Event Flags Reward: Premia eventi completati (trainer battles, quest progress, gym badges).
         Traccia event flags e trainer flags per incentivare progressione nella storia.
         """
         reward = 0.0
@@ -408,7 +651,8 @@ class LettoreMemoriaGioco:
         new_events = event_flags_curr - self.event_flags_precedenti
 
         if new_events:
-            reward += 2.0 * len(new_events)
+            # Eventi della storia = progressione importante
+            reward += 5.0 * len(new_events)
             self.event_flags_precedenti = event_flags_curr.copy()
 
         # Trainer flags (trainer battles vinti)
@@ -416,15 +660,15 @@ class LettoreMemoriaGioco:
         new_trainers = trainer_flags_curr - self.trainer_flags_precedenti
 
         if new_trainers:
-            # Trainer battles valgono di più (non grinding)
-            reward += 2.0 * len(new_trainers)
+            # Trainer battles valgono molto (non grinding, progressione obbligatoria)
+            reward += 100.0 * len(new_trainers)
             self.trainer_flags_precedenti = trainer_flags_curr.copy()
 
         return reward
 
     def _calcola_ricompense_navigation(self, s: Dict[str, Any]) -> float:
         """
-        Navigation Reward: +0.005 per ogni nuova coordinata visitata.
+        Navigation Reward: Premia esplorazione di nuove coordinate.
         Incentiva l'esplorazione sistematica senza grinding nella stessa area.
         """
         pos_x = s.get('pos_x', 0)
@@ -437,7 +681,7 @@ class LettoreMemoriaGioco:
         # Ricompensa solo se nuova coordinata
         if coord_key not in self.coordinate_visitate:
             self.coordinate_visitate.add(coord_key)
-            return 0.005
+            return 2.0  # Aumentato per incentivare esplorazione sistematica
 
         return 0.0
 
@@ -461,6 +705,29 @@ class LettoreMemoriaGioco:
                     # Reward proporzionale a % HP recuperati
                     recovery_percent = hp_recovered / hp_max_curr[i]
                     reward += recovery_percent * 5.0  # Max 5 reward per full heal
+
+        return reward
+
+    def calcola_ricompensa_curiosity(self, state_corrente: Dict[str, Any]) -> float:
+        """
+        Intrinsic Curiosity Module (ICM) reward.
+        Ricompensa per esplorare stati nuovi del gioco.
+        """
+        reward = 0.0
+
+        # Curiosity per nuove mappe visitate
+        current_map = state_corrente.get('id_mappa', 0)
+        if not hasattr(self, 'maps_visited'):
+            self.maps_visited = set()
+
+        if current_map not in self.maps_visited:
+            self.maps_visited.add(current_map)
+            reward += 100.0  # Grande bonus per nuova mappa (aumentato da 50 a 100)
+
+        # Curiosity per nuovi Pokemon visti/catturati
+        pokedex_visti = state_corrente.get('pokedex_visti', 0)
+        if pokedex_visti > self.stato_precedente.get('pokedex_visti', 0):
+            reward += 50.0 * (pokedex_visti - self.stato_precedente.get('pokedex_visti', 0))
 
         return reward
 
@@ -636,14 +903,21 @@ if TORCH_AVAILABLE:
             else:
                 return self.rete_esplorazione, self.ottimizzatore_esplorazione
 
-        def scegli_azione(self, state: torch.Tensor, game_state: str, deterministic: bool = False):
-            """Scelta azione con policy stocastica."""
+        def scegli_azione(self, state: torch.Tensor, game_state: str, deterministic: bool = False,
+                          action_mask: Optional[List[float]] = None):
+            """Scelta azione con policy stocastica e optional action masking."""
             rete, _ = self.seleziona_rete(game_state)
             rete.eval()
 
             with torch.no_grad():
                 state_batch = state.unsqueeze(0) if state.dim() == 3 else state
                 policy_logits, value = rete(state_batch)
+
+                # Applica action mask se fornito (context-aware filtering)
+                if action_mask is not None:
+                    policy_logits = ContextAwareActionFilter.apply_mask_to_logits(
+                        policy_logits, action_mask
+                    )
 
                 dist = Categorical(logits=policy_logits)
 
@@ -656,10 +930,14 @@ if TORCH_AVAILABLE:
 
             return action.item(), log_prob.item(), value.item()
 
-        def addestra_ppo(self, batch_data: Dict, game_state: str) -> Dict[str, float]:
-            """Training PPO con clipped surrogate objective."""
+        def addestra_ppo(self, batch_data: Dict, game_state: str, entropy_coeff: Optional[float] = None) -> Dict[str, float]:
+            """Training PPO con clipped surrogate objective e adaptive entropy."""
             rete, ottimizzatore = self.seleziona_rete(game_state)
             rete.train()
+
+            # Usa entropy coefficient fornito o default
+            if entropy_coeff is None:
+                entropy_coeff = IPERPARAMETRI['PPO_ENTROPY_COEFF']
 
             states = torch.stack(batch_data['states']).to(self.device)
             actions = torch.tensor(batch_data['actions'], dtype=torch.long).to(self.device)
@@ -708,7 +986,7 @@ if TORCH_AVAILABLE:
 
                     loss = (policy_loss +
                            IPERPARAMETRI['PPO_VALUE_COEFF'] * value_loss -
-                           IPERPARAMETRI['PPO_ENTROPY_COEFF'] * entropy)
+                           entropy_coeff * entropy)
 
                     ottimizzatore.zero_grad()
                     loss.backward()
@@ -735,10 +1013,22 @@ class AgentePokemonAI:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
 
-        self.pyboy = PyBoy(rom_path, window="headless" if headless else "SDL2")
-        self.pyboy.set_emulation_speed(0)
+        # Supporto per training parallelo
+        self.use_shared_buffer = False  # Impostato a True dal parallel_trainer
+        self.shared_buffer = None
+        self.rank = 0  # Rank del worker (0 = visibile, >0 = headless)
 
-        # PyBoy 2.6.0+ uses string-based button API
+        # PyBoy con finestra ottimizzata
+        window_type = "headless" if headless else "SDL2"
+        self.pyboy = PyBoy(rom_path, window=window_type)
+
+        # Imposta velocita emulazione (0=illimitata, 1=normale, 2=2x, etc.)
+        emulation_speed = IPERPARAMETRI['EMULATION_SPEED']
+        self.pyboy.set_emulation_speed(emulation_speed)
+        speed_desc = "illimitata" if emulation_speed == 0 else f"{emulation_speed}x"
+        print(f"[INFO] Velocita emulazione: {speed_desc}")
+
+        # PyBoy 2.6.0+ usa API basata su stringhe per i bottoni
         self.actions = [
             None,      # noop
             'up',      # up arrow
@@ -757,6 +1047,7 @@ class AgentePokemonAI:
 
         self.model_path = os.path.join(self.save_dir, "model_ppo.pth")
         self.stats_path = os.path.join(self.save_dir, "stats_ppo.json")
+        self.game_state_path = os.path.join(self.save_dir, "game_state.state")
 
         input_channels = IPERPARAMETRI['FRAME_STACK']
         self.gruppo_reti = GruppoRetiPPO(len(self.actions), self.device, input_channels)
@@ -767,6 +1058,11 @@ class AgentePokemonAI:
         self.lettore_memoria = LettoreMemoriaGioco(self.pyboy)
         self.rilevatore_stato = RilevatorStatoGioco()
         self.salvatore_asincrono = SalvatoreAsincrono()
+
+        # Anti-Confusion System Components
+        self.entropy_scheduler = AdaptiveEntropyScheduler()
+        self.anti_loop_buffer = AntiLoopMemoryBuffer()
+        self.action_filter = ContextAwareActionFilter()
 
         self.current_game_state = "exploring"
         self.last_screen_array = None
@@ -806,15 +1102,25 @@ class AgentePokemonAI:
     def _load_checkpoint(self):
         if os.path.exists(self.model_path):
             try:
-                checkpoint = torch.load(self.model_path, map_location=self.device)
+                checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
                 self.gruppo_reti.rete_esplorazione.load_state_dict(checkpoint['explorer_state'])
                 self.gruppo_reti.rete_battaglia.load_state_dict(checkpoint['battle_state'])
                 self.gruppo_reti.rete_menu.load_state_dict(checkpoint['menu_state'])
                 self.episode_count = checkpoint.get('episode', 0)
                 self.frame_count = checkpoint.get('frame', 0)
-                print(f"Checkpoint loaded: episode {self.episode_count}, frame {self.frame_count}")
+                print(f"[LOAD] Checkpoint caricato: episodio {self.episode_count}, frame {self.frame_count}")
+
+                # Carica stato del gioco se esistente
+                if os.path.exists(self.game_state_path):
+                    try:
+                        with open(self.game_state_path, 'rb') as f:
+                            self.pyboy.load_state(f)
+                        print(f"[LOAD] Stato del gioco caricato da {self.game_state_path}")
+                    except Exception as e:
+                        print(f"[WARN] Impossibile caricare stato gioco: {e}")
+                        print("[INFO] Partenza da inizio gioco")
             except Exception as e:
-                print(f"Error loading checkpoint: {e}")
+                print(f"[ERROR] Errore caricamento checkpoint: {e}")
 
     def _save_checkpoint(self):
         checkpoint = {
@@ -825,6 +1131,13 @@ class AgentePokemonAI:
             'frame': self.frame_count
         }
         self.salvatore_asincrono.salva_asincrono(lambda d: torch.save(d, self.model_path), checkpoint)
+
+        # Salva stato del gioco
+        try:
+            with open(self.game_state_path, 'wb') as f:
+                self.pyboy.save_state(f)
+        except Exception as e:
+            print(f"[WARN] Impossibile salvare stato gioco: {e}")
 
     def _get_screen_tensor(self):
         """Ottieni frame corrente preprocessato."""
@@ -854,116 +1167,166 @@ class AgentePokemonAI:
 
         return self.current_game_state
 
-    def _calculate_reward(self, screen_tensor, previous_screen):
+    def _calculate_reward(self):
+        """
+        Calcola reward basato SOLO su progressione di gioco (memoria).
+        Niente reward per movimento generico - previene convergenza prematura.
+        """
         reward = 0
-
-        if hasattr(self, 'last_screen_array'):
-            game_state = self._detect_game_state(self.last_screen_array)
-        else:
-            game_state = "exploring"
 
         memory_state = self.lettore_memoria.ottieni_stato_corrente()
         memory_reward = self.lettore_memoria.calcola_ricompense_eventi(memory_state)
         reward += memory_reward
 
-        if previous_screen is not None:
-            diff = torch.abs(screen_tensor - previous_screen).mean().item()
+        # Anti-Loop System: DISABILITATO se flag è False
+        if IPERPARAMETRI['ANTI_LOOP_ENABLED']:
+            # Anti-Loop System: penalità per comportamenti ripetitivi
+            loop_penalty = self.anti_loop_buffer.calculate_loop_penalty()
+            if loop_penalty < 0:
+                reward += loop_penalty
+                # Log quando detectato loop (solo occasionalmente per non spammare)
+                if self.frame_count % 5000 == 0:  # Ogni 5000 frame invece di 100
+                    print(f"[ANTI-LOOP] Loop detectato! Penalità: {loop_penalty:.2f}")
 
-            movement_threshold = 0.02
-            if game_state == "dialogue":
-                movement_threshold = 0.005
-            elif game_state == "battle":
-                movement_threshold = 0.01
-
-            if diff > movement_threshold:
-                reward += min(diff * 10, 2.0)
-            elif diff < movement_threshold * 0.1:
-                reward -= 0.05
+            # Exploration bonus: reward per esplorare attivamente
+            exploration_bonus = self.anti_loop_buffer.get_exploration_bonus()
+            if exploration_bonus > 0:
+                reward += exploration_bonus
 
         self.reward_history.append(reward)
         self.total_reward += reward
         return reward
 
     def avvia_training(self) -> None:
-        """Main PPO training loop with emulator optimizations."""
+        """Loop principale di training PPO con rendering fluido."""
         paused = False
-        previous_single_frame = None
         last_save_frame = 0
-
-        # Performance tracking
         perf_start_time = time.time()
         perf_frame_count = 0
 
-        # Initialize frame stack
         initial_frame = self._get_screen_tensor()
         self.frame_stack.reset(initial_frame)
+
+        render_counter = 0
 
         try:
             while True:
                 if keyboard.is_pressed('escape'):
                     break
-
                 if keyboard.is_pressed('space'):
                     paused = not paused
                     time.sleep(0.3)
+
+                # Controlli velocita: + e - per aumentare/diminuire
+                if keyboard.is_pressed('+') or keyboard.is_pressed('='):
+                    current_speed = IPERPARAMETRI['EMULATION_SPEED']
+                    IPERPARAMETRI['EMULATION_SPEED'] = min(current_speed + 1, 10)
+                    self.pyboy.set_emulation_speed(IPERPARAMETRI['EMULATION_SPEED'])
+                    print(f"[INFO] Velocita: {IPERPARAMETRI['EMULATION_SPEED']}x")
+                    time.sleep(0.2)
+                if keyboard.is_pressed('-') or keyboard.is_pressed('_'):
+                    current_speed = IPERPARAMETRI['EMULATION_SPEED']
+                    IPERPARAMETRI['EMULATION_SPEED'] = max(current_speed - 1, 0)
+                    self.pyboy.set_emulation_speed(IPERPARAMETRI['EMULATION_SPEED'])
+                    speed_desc = "illimitata" if IPERPARAMETRI['EMULATION_SPEED'] == 0 else f"{IPERPARAMETRI['EMULATION_SPEED']}x"
+                    print(f"[INFO] Velocita: {speed_desc}")
+                    time.sleep(0.2)
 
                 if paused:
                     self.pyboy.tick()
                     continue
 
+                # Cattura stato corrente
                 single_frame = self._get_screen_tensor()
                 self.frame_stack.aggiungi(single_frame)
                 stacked_state = self.frame_stack.ottieni_stack()
 
+                # Context-Aware Action Masking
+                action_mask = self.action_filter.get_action_mask(self.current_game_state)
+
+                # L'AI decide l'azione da eseguire (con action masking)
                 action, log_prob, value = self.gruppo_reti.scegli_azione(
-                    stacked_state, self.current_game_state
+                    stacked_state, self.current_game_state, action_mask=action_mask
                 )
 
-                # PyBoy 2.6.0+ API: use button_press/button_release
+                # Esegui azione
                 button = self.actions[action]
-                if button is not None:  # Skip noop
+                if button is not None:
                     self.pyboy.button_press(button)
 
-                # OPTIMIZATION: Adaptive frameskipping based on game state
+                # Frameskip adattivo basato sullo stato di gioco
                 frameskip_map = {
                     "dialogue": IPERPARAMETRI['FRAMESKIP_DIALOGUE'],
                     "battle": IPERPARAMETRI['FRAMESKIP_BATTLE'],
                     "menu": IPERPARAMETRI['FRAMESKIP_MENU'],
                     "exploring": IPERPARAMETRI['FRAMESKIP_EXPLORING']
                 }
-                frameskip = frameskip_map.get(self.current_game_state, IPERPARAMETRI['FRAMESKIP_BASE'])
+                frameskip = frameskip_map.get(self.current_game_state,
+                                             IPERPARAMETRI['FRAMESKIP_BASE'])
 
-                # OPTIMIZATION: Use tick(count=X, render=False) for speed
-                self.pyboy.tick(count=frameskip, render=IPERPARAMETRI['RENDER_ENABLED'])
+                # Rendering fluido senza lag
+                if IPERPARAMETRI['RENDER_ENABLED']:
+                    # Renderizza ogni N frame per fluidita
+                    render_freq = IPERPARAMETRI['RENDER_EVERY_N_FRAMES']
+                    for i in range(frameskip):
+                        should_render = (i % render_freq == 0)
+                        self.pyboy.tick(1, render=should_render)
+                        render_counter += 1
+                else:
+                    # Modalita headless: massima velocita
+                    self.pyboy.tick(count=frameskip, render=False)
 
-                # Release button after ticking
+                # Rilascia bottone
                 if button is not None:
                     self.pyboy.button_release(button)
 
+                # Cattura prossimo stato
                 next_single_frame = self._get_screen_tensor()
-                reward = self._calculate_reward(next_single_frame, previous_single_frame)
 
-                # Performance monitoring
+                # Aggiorna Anti-Loop Buffer solo se abilitato
+                if IPERPARAMETRI['ANTI_LOOP_ENABLED']:
+                    mem_state = self.lettore_memoria.ottieni_stato_corrente()
+                    self.anti_loop_buffer.add_state(
+                        mem_state.get('pos_x', 0),
+                        mem_state.get('pos_y', 0),
+                        mem_state.get('id_mappa', 0),
+                        action
+                    )
+
+                reward = self._calculate_reward()
+
+                # Monitoraggio performance
                 perf_frame_count += 1
                 if perf_frame_count % IPERPARAMETRI['PERFORMANCE_LOG_INTERVAL'] == 0:
                     elapsed = time.time() - perf_start_time
                     fps = perf_frame_count / elapsed
-                    print(f"Performance: {fps:.1f} FPS (avg), Frame: {self.frame_count}, State: {self.current_game_state}")
+                    avg_reward = np.mean(list(self.reward_history)) if self.reward_history else 0
+
+                    # Calcola entropy corrente
+                    current_entropy = self.entropy_scheduler.get_entropy(self.frame_count)
+
+                    # Stato gioco dettagliato
+                    mem_state = self.lettore_memoria.ottieni_stato_corrente()
+                    print(f"[PERF] {fps:.1f} FPS | Frame: {self.frame_count} | "
+                          f"Stato: {self.current_game_state} | Reward Medio: {avg_reward:.2f}")
+                    print(f"[GAME] Medaglie: {mem_state.get('medaglie', 0)} | "
+                          f"Pokedex: {mem_state.get('pokedex_posseduti', 0)}/{mem_state.get('pokedex_visti', 0)} | "
+                          f"Mappa: {mem_state.get('id_mappa', 0)} | "
+                          f"Pos: ({mem_state.get('pos_x', 0)},{mem_state.get('pos_y', 0)})")
+                    print(f"[ADAPTIVE] Entropy: {current_entropy:.4f} | "
+                          f"Exploration: {'High' if current_entropy > 0.03 else 'Medium' if current_entropy > 0.01 else 'Low'}")
+
                     perf_start_time = time.time()
                     perf_frame_count = 0
 
+                # Aggiungi a trajectory buffer
                 self.trajectory_buffer.aggiungi(
-                    stacked_state.cpu(),
-                    action,
-                    reward,
-                    value,
-                    log_prob,
-                    False,
-                    self.current_game_state
+                    stacked_state.cpu(), action, reward, value,
+                    log_prob, False, self.current_game_state
                 )
 
+                # Training quando buffer è pieno
                 if self.trajectory_buffer.is_full():
-                    # Calcola GAE e addestra
                     self.frame_stack.aggiungi(next_single_frame)
                     next_stacked_state = self.frame_stack.ottieni_stack()
                     _, _, next_value = self.gruppo_reti.scegli_azione(
@@ -972,10 +1335,12 @@ class AgentePokemonAI:
 
                     advantages, returns = self.trajectory_buffer.calcola_vantaggi_gae(next_value)
 
-                    # Train su ciascun game state presente nel buffer
+                    # Calcola entropy coefficient adattivo basato sui frame totali
+                    current_entropy_coeff = self.entropy_scheduler.get_entropy(self.frame_count)
+
+                    # Train per game state
                     game_states_in_buffer = set(self.trajectory_buffer.game_states)
                     for gs in game_states_in_buffer:
-                        # Filtra batch per game state
                         indices = [i for i, g in enumerate(self.trajectory_buffer.game_states) if g == gs]
                         if len(indices) < IPERPARAMETRI['PPO_MINIBATCH_SIZE']:
                             continue
@@ -989,35 +1354,34 @@ class AgentePokemonAI:
                             'game_states': [gs] * len(indices)
                         }
 
-                        metrics = self.gruppo_reti.addestra_ppo(batch_data, gs)
+                        # Training con entropy coefficient adattivo
+                        metrics = self.gruppo_reti.addestra_ppo(batch_data, gs, entropy_coeff=current_entropy_coeff)
                         self.loss_history.append(metrics['policy_loss'])
 
                         if self.frame_count % 100 == 0:
-                            print(f"Frame {self.frame_count} [{gs}] - "
+                            print(f"[TRAIN] Frame {self.frame_count} [{gs}] - "
                                   f"Policy Loss: {metrics['policy_loss']:.4f}, "
                                   f"Value Loss: {metrics['value_loss']:.4f}, "
-                                  f"Entropy: {metrics['entropy']:.4f}, "
-                                  f"Reward: {self.total_reward:.2f}")
+                                  f"Entropy: {metrics['entropy']:.4f}")
 
                     self.trajectory_buffer.reset()
 
+                # Salvataggio checkpoint
                 if self.frame_count - last_save_frame >= IPERPARAMETRI['FREQUENZA_SALVATAGGIO']:
                     self._save_checkpoint()
                     self._save_stats()
                     last_save_frame = self.frame_count
-                    print(f"Checkpoint saved at frame {self.frame_count}")
+                    print(f"[SAVE] Checkpoint salvato al frame {self.frame_count}")
 
-                previous_single_frame = next_single_frame
                 self.frame_count += 1
 
         except KeyboardInterrupt:
-            print("Training interrupted by user")
-
+            print("\n[INFO] Training interrotto dall'utente")
         finally:
             self._save_checkpoint()
             self._save_stats()
             self.pyboy.stop()
-            print(f"Training completed. Total frames: {self.frame_count}, Total reward: {self.total_reward:.2f}")
+            print(f"[INFO] Training completato. Frame: {self.frame_count}, Reward Totale: {self.total_reward:.2f}")
 
 def principale() -> None:
     while True:

@@ -1,6 +1,12 @@
-# Core dependencies
+# Core dependencies (GPU-accelerated)
+# For CUDA 12.1+ (NVIDIA GPU):
 torch>=2.0.0
 torchvision>=0.15.0
+# Install with: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# For CPU-only (no GPU):
+# pip install torch torchvision
+
 numpy>=1.24.0
 
 # Game Boy emulator

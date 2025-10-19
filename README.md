@@ -10,13 +10,27 @@ AI agent that learns to play Pokemon Red/Blue using **Proximal Policy Optimizati
 
 1. Install dependencies:
    ```bash
-   pip install torch pyboy numpy opencv-python keyboard
+   pip install -r requirements.txt
+   # For GPU: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
    ```
 
-2. Run the AI:
+2. Choose training mode:
+
+   **Single Environment** (visualize AI playing):
    ```bash
    python gbc_ai_agent.py
    ```
+   - Shows window with gameplay
+   - ~2,000-4,000 FPS (GPU)
+   - Good for debugging/watching
+
+   **Parallel Training** (8-96x faster):
+   ```bash
+   python parallel_trainer.py
+   ```
+   - 8-96 environments in parallel
+   - ~16,000-64,000 FPS (8-32 workers)
+   - **Recommended for production**
 
 3. Enter ROM path:
    ```
