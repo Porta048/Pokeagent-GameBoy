@@ -1,7 +1,18 @@
-pyboy
-numpy
-Pillow
-keyboard
-torch
-torchvision
-opencv-python
+# Core dependencies
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.24.0
+
+# Game Boy emulator
+pyboy>=1.6.0
+
+# Image processing
+Pillow>=10.0.0
+opencv-python>=4.8.0
+
+# Input handling
+keyboard>=0.13.5
+
+# Optional: For parallel training (future feature)
+# multiprocessing is built-in
+# ray>=2.9.0  # Uncomment for distributed training

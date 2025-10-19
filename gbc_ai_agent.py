@@ -4,6 +4,27 @@ from collections import deque
 from functools import lru_cache
 import numpy as np
 
+try:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    import torch.optim as optim
+    from torch.distributions import Categorical
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    print("WARNING: PyTorch not found. Install with: pip install torch")
+
+try:
+    from pyboy import PyBoy
+    import keyboard
+    from PIL import Image
+    import cv2
+    DEPS_AVAILABLE = True
+except ImportError as e:
+    DEPS_AVAILABLE = False
+    print(f"WARNING: Missing dependencies: {e}")
+
 REGIONI_SCHERMO = {
     'BARRA_HP': (slice(100, 120), slice(90, 150)),
     'AREA_MENU': (slice(110, 140), slice(0, 80)),
@@ -18,77 +39,115 @@ IPERPARAMETRI = {
     'SOGLIA_MOVIMENTO': 0.02,
     'SOGLIA_BLOCCATO': 50,
     'INTERVALLO_CONTROLLO_MEMORIA': 30,
-    'DIMENSIONE_BATCH': 64,
-    'FATTORE_SCONTO': 0.99,
-    'EPSILON_MINIMO': 0.05,
-    'DECADIMENTO_EPSILON': 0.9995,
-    'TASSO_APPRENDIMENTO': 0.00025,
-    'DIMENSIONE_MEMORIA': 50000,
-    'FREQUENZA_AGGIORNAMENTO_TARGET': 100,
     'FREQUENZA_SALVATAGGIO': 10000,
-    'ALPHA_PRIORITA': 0.6,
-    'BETA_PRIORITA': 0.4,
-    'EPSILON_PRIORITA': 1e-6,
-    'DIMENSIONE_CACHE': 1000
+    'DIMENSIONE_CACHE': 1000,
+    # PPO Hyperparameters
+    'PPO_CLIP_EPSILON': 0.2,
+    'PPO_VALUE_COEFF': 0.5,
+    'PPO_ENTROPY_COEFF': 0.01,
+    'PPO_GAE_LAMBDA': 0.95,
+    'PPO_GAE_GAMMA': 0.99,
+    'PPO_EPOCHS': 3,
+    'PPO_MINIBATCH_SIZE': 32,
+    'PPO_TRAJECTORY_LENGTH': 512,
+    'PPO_LR': 3e-4,
+    'PPO_MAX_GRAD_NORM': 0.5,
+    'FRAME_STACK': 4,
+    # Emulator Optimizations
+    'FRAMESKIP_BASE': 6,              # Base frameskip (4-8 recommended)
+    'FRAMESKIP_DIALOGUE': 3,          # Lower for dialogue (need to catch text)
+    'FRAMESKIP_BATTLE': 8,            # Higher for battle (faster)
+    'FRAMESKIP_EXPLORING': 6,         # Balanced for exploration
+    'FRAMESKIP_MENU': 4,              # Moderate for menu navigation
+    'RENDER_ENABLED': False,          # Disable rendering for speed
+    'PERFORMANCE_LOG_INTERVAL': 1000  # Log performance every N frames
 }
 
 class ErroreAIPokemon(Exception): pass
 
-class BufferRiproduzioneConPriorita:
-    """Buffer di riproduzione esperienza con priorità per DQN."""
-    def __init__(self, capacita: int, alpha: float = 0.6):
-        self.capacita = capacita
-        self.alpha = alpha
-        self.buffer = []
-        self.priorita = []
-        self.posizione = 0
-        self.dimensione = 0
+class BufferTraiettorie:
+    """Buffer per trajectories PPO con calcolo GAE."""
+    def __init__(self, capacity: int = IPERPARAMETRI['PPO_TRAJECTORY_LENGTH']):
+        self.capacity = capacity
+        self.reset()
 
-    def aggiungi(self, esperienza, priorita: float = None):
-        priorita = priorita or (max(self.priorita) if self.priorita else 1.0)
+    def reset(self):
+        self.states = []
+        self.actions = []
+        self.rewards = []
+        self.values = []
+        self.log_probs = []
+        self.dones = []
+        self.game_states = []
 
-        if self.dimensione < self.capacita:
-            self.buffer.append(esperienza)
-            self.priorita.append(priorita ** self.alpha)
-            self.dimensione += 1
-        else:
-            self.buffer[self.posizione] = esperienza
-            self.priorita[self.posizione] = priorita ** self.alpha
+    def aggiungi(self, state, action, reward, value, log_prob, done, game_state):
+        self.states.append(state)
+        self.actions.append(action)
+        self.rewards.append(reward)
+        self.values.append(value)
+        self.log_probs.append(log_prob)
+        self.dones.append(done)
+        self.game_states.append(game_state)
 
-        self.posizione = (self.posizione + 1) % self.capacita
+    def __len__(self):
+        return len(self.states)
 
-    def campiona(self, dim_batch: int, beta: float = 0.4):
-        if self.dimensione < dim_batch: return [], [], []
+    def is_full(self):
+        return len(self) >= self.capacity
 
-        arr_p = np.array(self.priorita[:self.dimensione])
-        p_tot = arr_p.sum()
+    def calcola_vantaggi_gae(self, next_value):
+        """Calcola advantages con GAE-Lambda."""
+        advantages = []
+        gae = 0
 
-        if self.dimensione > 10000:
-            idx_top = np.argpartition(arr_p, -dim_batch//2)[-dim_batch//2:]
-            idx_rand = np.random.choice(self.dimensione, dim_batch//2, replace=False)
-            indici = np.concatenate([idx_top, idx_rand])
-        else:
-            indici = np.random.choice(self.dimensione, dim_batch, replace=False) if p_tot == 0 else \
-                     np.random.choice(self.dimensione, dim_batch, p=arr_p / p_tot)
+        gamma = IPERPARAMETRI['PPO_GAE_GAMMA']
+        lam = IPERPARAMETRI['PPO_GAE_LAMBDA']
 
-        esperienze = [self.buffer[i] for i in indici]
+        values = self.values + [next_value]
 
-        if self.dimensione > 10000 or p_tot == 0:
-            pesi = np.ones(dim_batch).tolist()
-        else:
-            prob = arr_p[indici] / p_tot
-            pesi = ((self.dimensione * prob) ** (-beta) / ((self.dimensione * prob) ** (-beta)).max()).tolist()
+        for t in reversed(range(len(self.rewards))):
+            delta = self.rewards[t] + gamma * values[t + 1] * (1 - self.dones[t]) - values[t]
+            gae = delta + gamma * lam * (1 - self.dones[t]) * gae
+            advantages.insert(0, gae)
 
-        return esperienze, pesi, indici
+        returns = [adv + val for adv, val in zip(advantages, self.values)]
+        return advantages, returns
 
-    def aggiorna_priorita(self, indici, nuove_priorita):
-        for idx, p in zip(indici, nuove_priorita):
-            self.priorita[idx] = (p + IPERPARAMETRI['EPSILON_PRIORITA']) ** self.alpha
+    def ottieni_batch(self, advantages, returns):
+        """Restituisce dati per training."""
+        return {
+            'states': self.states,
+            'actions': self.actions,
+            'old_log_probs': self.log_probs,
+            'advantages': advantages,
+            'returns': returns,
+            'game_states': self.game_states
+        }
 
-    def __len__(self): return self.dimensione
+class FrameStack:
+    """Gestisce frame stacking 4x per input temporale."""
+    def __init__(self, stack_size=4):
+        self.stack_size = stack_size
+        self.frames = deque(maxlen=stack_size)
+
+    def reset(self, initial_frame):
+        """Inizializza con frame iniziale ripetuto."""
+        self.frames.clear()
+        for _ in range(self.stack_size):
+            self.frames.append(initial_frame)
+
+    def aggiungi(self, frame):
+        """Aggiungi nuovo frame allo stack."""
+        self.frames.append(frame)
+
+    def ottieni_stack(self):
+        """Ottieni stack corrente come array."""
+        if TORCH_AVAILABLE:
+            return torch.cat(list(self.frames), dim=0)
+        return np.concatenate(list(self.frames), axis=0)
 
 class CacheImmagini:
-    """Cache LRU per immagini schermo preprocessate con pulizia basata su frequenza."""
+    """Cache LRU per immagini preprocessate."""
     def __init__(self, dimensione_max: int = IPERPARAMETRI['DIMENSIONE_CACHE']):
         self.cache = {}
         self.coda_accesso = deque()
@@ -149,9 +208,9 @@ class SalvatoreAsincrono:
                 self.thread = threading.Thread(target=self._processa_coda)
                 self.thread.daemon = True
                 self.thread.start()
+                self.attivo = True
 
     def _processa_coda(self):
-        with self.lock: self.attivo = True
         while True:
             with self.lock:
                 if not self.coda:
@@ -161,98 +220,113 @@ class SalvatoreAsincrono:
             try:
                 func(dati)
             except Exception as e:
-                print(f"Errore salvataggio: {e}")
-
-def controlla_dipendenze() -> bool:
-    """Controlla e installa le dipendenze richieste."""
-    try:
-        import torch
-        return True
-    except ImportError:
-        os.system(f"{sys.executable} -m pip install torch pyboy numpy opencv-python keyboard")
-        return True
-
-torch_disponibile = controlla_dipendenze()
-
-import pyboy
-from pyboy.utils import WindowEvent
-import keyboard
-import cv2
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
+                print(f"Errore salvataggio asincrono: {e}")
 
 class LettoreMemoriaGioco:
-    """Legge e monitora lo stato della memoria del gioco Pokemon."""
-    def __init__(self, pyboy: Any) -> None:
+    """Legge memoria del gioco per reward ed eventi con sistema multi-componente sofisticato."""
+    INDIRIZZI_MEMORIA = {
+        'SOLDI': (0xD347, 0xD349),
+        'MEDAGLIE': 0xD356,
+        'POKEDEX_POSSEDUTI': 0xD2F7,
+        'POKEDEX_VISTI': 0xD30A,
+        'LIVELLI_SQUADRA': [(0xD18C + i*44, 0xD18C + i*44 + 1) for i in range(6)],
+        'HP_SQUADRA': [(0xD16D + i*44, 0xD16E + i*44) for i in range(6)],
+        'HP_MAX_SQUADRA': [(0xD18D + i*44, 0xD18E + i*44) for i in range(6)],
+        'ID_MAPPA': 0xD35E,
+        'POS_X': 0xD361,
+        'POS_Y': 0xD362,
+        'EVENT_FLAGS': (0xD747, 0xD886),  # Event flags range (320 bytes)
+        'TRAINER_FLAGS': (0xD5A0, 0xD5F7)  # Trainer defeat flags (88 bytes)
+    }
+
+    def __init__(self, pyboy):
         self.pyboy = pyboy
-        self.tipo_gioco = self._rileva_tipo_gioco()
-        self.indirizzi_memoria = self._ottieni_indirizzi_memoria()
-        self.stato_precedente = {'soldi_giocatore': 0, 'medaglie': 0, 'pokedex_posseduti': 0, 'pokedex_visti': 0, 'livelli_squadra': [0] * 6, 'hp_squadra': [0] * 6, 'pos_x': 0, 'pos_y': 0, 'id_mappa': 0}
+        self.stato_precedente = {}
 
-    def _rileva_tipo_gioco(self) -> str:
-        t = self.pyboy.cartridge_title.strip().upper()
-        return 'rb' if 'RED' in t or 'BLUE' in t else 'yellow' if 'YELLOW' in t else \
-               'gs' if 'GOLD' in t or 'SILVER' in t else 'crystal' if 'CRYSTAL' in t else 'generic'
+        # Navigation tracking
+        self.coordinate_visitate = set()
+        self.ultima_posizione = None
 
-    def _ottieni_indirizzi_memoria(self) -> Dict[str, int]:
-        """Ottieni gli indirizzi di memoria per il tipo di gioco corrente."""
-        base = {'soldi_giocatore': 0xD347, 'medaglie': 0xD356, 'conteggio_squadra': 0xD163, 'pos_x': 0xD362, 'pos_y': 0xD361, 'id_mappa': 0xD35E, 'pokedex_posseduti': 0xD2F7, 'pokedex_visti': 0xD30A, 'livelli_squadra': 0xD18C, 'hp_squadra': 0xD16C, 'tipo_battaglia': 0xD057}
-        if self.tipo_gioco in ['gs', 'crystal']:
-            base.update({'soldi_giocatore': 0xD84E, 'medaglie': 0xD857, 'pokedex_posseduti': 0xDE99, 'conteggio_squadra': 0xDCD7, 'livelli_squadra': 0xDCFF, 'hp_squadra': 0xDD01, 'pos_x': 0xDCB8, 'pos_y': 0xDCB7, 'id_mappa': 0xDCB5})
-        return base
+        # Event tracking
+        self.event_flags_precedenti = set()
+        self.trainer_flags_precedenti = set()
 
-    def leggi_memoria(self, addr: int, lung: int = 1) -> Union[int, List[int]]:
-        try:
-            return self.pyboy.memory[addr] if lung == 1 else [self.pyboy.memory[addr + i] for i in range(lung)]
-        except:
-            return 0 if lung == 1 else [0] * lung
+        # Anti-grinding tracking
+        self.wild_battle_count = 0
+        self.ultimo_livello_medio = 0
+        self.level_up_recenti = deque(maxlen=10)  # Track recent level-ups
 
     def ottieni_stato_corrente(self) -> Dict[str, Any]:
-        """Ottieni lo stato corrente del gioco dalla memoria."""
-        stato = {}
         try:
-            for chiave in ['soldi_giocatore', 'medaglie', 'pokedex_posseduti', 'pokedex_visti', 'pos_x', 'pos_y', 'id_mappa']:
-                if chiave in self.indirizzi_memoria:
-                    if chiave == 'soldi_giocatore':
-                        stato[chiave] = self._bcd_a_int(self.leggi_memoria(self.indirizzi_memoria[chiave], 3))
-                    elif chiave == 'medaglie':
-                        stato[chiave] = bin(self.leggi_memoria(self.indirizzi_memoria[chiave])).count('1')
-                    elif chiave in ['pokedex_posseduti', 'pokedex_visti']:
-                        stato[chiave] = sum(bin(b).count('1') for b in self.leggi_memoria(self.indirizzi_memoria[chiave], 19))
-                    else:
-                        stato[chiave] = self.leggi_memoria(self.indirizzi_memoria[chiave])
+            mem = self.pyboy.get_memory_value
 
-            conteggio_squadra = min(self.leggi_memoria(self.indirizzi_memoria.get('conteggio_squadra', 0xD163)), 6)
-            stato['conteggio_squadra'] = conteggio_squadra
-            if conteggio_squadra > 0:
-                livelli = self.leggi_memoria(self.indirizzi_memoria.get('livelli_squadra', 0xD18C), conteggio_squadra * 48)
-                stato['livelli_squadra'] = [livelli[i * 48] if i * 48 < len(livelli) else 0 for i in range(6)]
-                dati_hp = self.leggi_memoria(self.indirizzi_memoria.get('hp_squadra', 0xD16C), conteggio_squadra * 96)
-                stato['hp_squadra'] = [(dati_hp[i*96] << 8) | dati_hp[i*96+1] if i*96+1 < len(dati_hp) else 0 for i in range(conteggio_squadra)]
+            soldi_bcd = [mem(addr) for addr in range(self.INDIRIZZI_MEMORIA['SOLDI'][0], self.INDIRIZZI_MEMORIA['SOLDI'][1] + 1)]
+            soldi = sum(((b >> 4) * 10 + (b & 0xF)) * (100 ** i) for i, b in enumerate(reversed(soldi_bcd)))
 
-            stato['in_battaglia'] = self.leggi_memoria(self.indirizzi_memoria.get('tipo_battaglia', 0xD057)) != 0
+            medaglie = bin(mem(self.INDIRIZZI_MEMORIA['MEDAGLIE'])).count('1')
+
+            pokedex_posseduti = sum(bin(mem(addr)).count('1') for addr in range(self.INDIRIZZI_MEMORIA['POKEDEX_POSSEDUTI'], self.INDIRIZZI_MEMORIA['POKEDEX_POSSEDUTI'] + 19))
+            pokedex_visti = sum(bin(mem(addr)).count('1') for addr in range(self.INDIRIZZI_MEMORIA['POKEDEX_VISTI'], self.INDIRIZZI_MEMORIA['POKEDEX_VISTI'] + 19))
+
+            livelli_squadra = [mem(addr[0]) for addr in self.INDIRIZZI_MEMORIA['LIVELLI_SQUADRA']]
+            hp_squadra = [mem(addr[0]) * 256 + mem(addr[1]) for addr in self.INDIRIZZI_MEMORIA['HP_SQUADRA']]
+            hp_max_squadra = [mem(addr[0]) * 256 + mem(addr[1]) for addr in self.INDIRIZZI_MEMORIA['HP_MAX_SQUADRA']]
+
+            in_battaglia = any(hp > 0 for hp in hp_squadra[:3])
+
+            # Leggi event flags
+            event_flags = set()
+            for addr in range(self.INDIRIZZI_MEMORIA['EVENT_FLAGS'][0], self.INDIRIZZI_MEMORIA['EVENT_FLAGS'][1] + 1):
+                byte_val = mem(addr)
+                for bit in range(8):
+                    if byte_val & (1 << bit):
+                        event_flags.add((addr - self.INDIRIZZI_MEMORIA['EVENT_FLAGS'][0]) * 8 + bit)
+
+            # Leggi trainer flags
+            trainer_flags = set()
+            for addr in range(self.INDIRIZZI_MEMORIA['TRAINER_FLAGS'][0], self.INDIRIZZI_MEMORIA['TRAINER_FLAGS'][1] + 1):
+                byte_val = mem(addr)
+                for bit in range(8):
+                    if byte_val & (1 << bit):
+                        trainer_flags.add((addr - self.INDIRIZZI_MEMORIA['TRAINER_FLAGS'][0]) * 8 + bit)
+
+            return {
+                'soldi_giocatore': soldi,
+                'medaglie': medaglie,
+                'pokedex_posseduti': pokedex_posseduti,
+                'pokedex_visti': pokedex_visti,
+                'livelli_squadra': livelli_squadra,
+                'hp_squadra': hp_squadra,
+                'hp_max_squadra': hp_max_squadra,
+                'in_battaglia': in_battaglia,
+                'id_mappa': mem(self.INDIRIZZI_MEMORIA['ID_MAPPA']),
+                'pos_x': mem(self.INDIRIZZI_MEMORIA['POS_X']),
+                'pos_y': mem(self.INDIRIZZI_MEMORIA['POS_Y']),
+                'event_flags': event_flags,
+                'trainer_flags': trainer_flags
+            }
         except:
-            pass
-        return stato
-
-    def _bcd_a_int(self, bcd: List[int]) -> int:
-        return sum(((b >> 4) * 10 + (b & 0x0F)) * (100 ** i) for i, b in enumerate(reversed(bcd)))
+            return self.stato_precedente.copy() if self.stato_precedente else {}
 
     def calcola_ricompense_eventi(self, stato_corrente: Dict[str, Any]) -> float:
-        """Calcola la ricompensa basata sugli eventi di gioco."""
-        ricompensa = 0
-        if not self.stato_precedente:
+        if not self.stato_precedente or not stato_corrente:
             self.stato_precedente = stato_corrente.copy()
-            return ricompensa
+            return 0.0
 
+        ricompensa = 0.0
+
+        # Sistema reward multi-componente sofisticato
         ricompensa += self._calcola_ricompense_medaglie(stato_corrente)
         ricompensa += self._calcola_ricompense_pokemon(stato_corrente)
-        ricompensa += self._calcola_ricompense_livelli(stato_corrente)
+        ricompensa += self._calcola_ricompense_livelli_bilanciato(stato_corrente)  # NEW: Balanced
         ricompensa += self._calcola_ricompense_soldi(stato_corrente)
         ricompensa += self._calcola_ricompense_esplorazione(stato_corrente)
         ricompensa += self._calcola_ricompense_battaglia(stato_corrente)
+
+        # NEW: Advanced rewards
+        ricompensa += self._calcola_ricompense_event_flags(stato_corrente)  # Event flags
+        ricompensa += self._calcola_ricompense_navigation(stato_corrente)   # Navigation exploration
+        ricompensa += self._calcola_ricompense_healing(stato_corrente)      # Healing rewards
 
         self.stato_precedente = stato_corrente.copy()
         return ricompensa
@@ -268,10 +342,43 @@ class LettoreMemoriaGioco:
             r += 10 * (s.get('pokedex_visti', 0) - self.stato_precedente.get('pokedex_visti', 0))
         return r
 
-    def _calcola_ricompense_livelli(self, s: Dict[str, Any]) -> float:
+    def _calcola_ricompense_livelli_bilanciato(self, s: Dict[str, Any]) -> float:
+        """
+        Balanced level reward: Incentiva level-up iniziali, scoraggia grinding eccessivo.
+        Formula: reward = base_reward * diminishing_factor
+        """
         lv_curr = s.get('livelli_squadra', [0] * 6)
         lv_prev = self.stato_precedente.get('livelli_squadra', [0] * 6)
-        return sum(50 * (lv_curr[i] - lv_prev[i]) for i in range(min(len(lv_curr), len(lv_prev))) if lv_curr[i] > lv_prev[i])
+
+        reward = 0.0
+
+        for i in range(min(len(lv_curr), len(lv_prev))):
+            if lv_curr[i] > lv_prev[i]:
+                level_up_amount = lv_curr[i] - lv_prev[i]
+
+                # Base reward diminuisce con il livello (anti-grinding)
+                if lv_curr[i] <= 15:
+                    base_reward = 50  # Early game: full reward
+                elif lv_curr[i] <= 30:
+                    base_reward = 30  # Mid game: reduced
+                elif lv_curr[i] <= 45:
+                    base_reward = 15  # Late game: minimal
+                else:
+                    base_reward = 5   # End game: very small
+
+                # Penalizza grinding su wild Pokemon (se troppi level-up recenti)
+                self.level_up_recenti.append(time.time())
+                level_ups_last_minute = sum(1 for t in self.level_up_recenti if time.time() - t < 60)
+
+                if level_ups_last_minute > 5:
+                    # Troppi level-up in poco tempo = grinding
+                    grinding_penalty = 0.3
+                else:
+                    grinding_penalty = 1.0
+
+                reward += base_reward * level_up_amount * grinding_penalty
+
+        return reward
 
     def _calcola_ricompense_soldi(self, s: Dict[str, Any]) -> float:
         diff = s.get('soldi_giocatore', 0) - self.stato_precedente.get('soldi_giocatore', 0)
@@ -288,6 +395,74 @@ class LettoreMemoriaGioco:
         if prev_battle and not curr_battle:
             return 50 if any(hp > 0 for hp in s.get('hp_squadra', [])) else -100
         return 2 if not prev_battle and curr_battle else 0
+
+    def _calcola_ricompense_event_flags(self, s: Dict[str, Any]) -> float:
+        """
+        Event Flags Reward: +2 per ogni evento completato (trainer battles, quest progress, gym badges).
+        Traccia event flags e trainer flags per incentivare progressione nella storia.
+        """
+        reward = 0.0
+
+        # Event flags (quest progress, items, story events)
+        event_flags_curr = s.get('event_flags', set())
+        new_events = event_flags_curr - self.event_flags_precedenti
+
+        if new_events:
+            reward += 2.0 * len(new_events)
+            self.event_flags_precedenti = event_flags_curr.copy()
+
+        # Trainer flags (trainer battles vinti)
+        trainer_flags_curr = s.get('trainer_flags', set())
+        new_trainers = trainer_flags_curr - self.trainer_flags_precedenti
+
+        if new_trainers:
+            # Trainer battles valgono di più (non grinding)
+            reward += 2.0 * len(new_trainers)
+            self.trainer_flags_precedenti = trainer_flags_curr.copy()
+
+        return reward
+
+    def _calcola_ricompense_navigation(self, s: Dict[str, Any]) -> float:
+        """
+        Navigation Reward: +0.005 per ogni nuova coordinata visitata.
+        Incentiva l'esplorazione sistematica senza grinding nella stessa area.
+        """
+        pos_x = s.get('pos_x', 0)
+        pos_y = s.get('pos_y', 0)
+        id_mappa = s.get('id_mappa', 0)
+
+        # Crea chiave unica per posizione (mappa, x, y)
+        coord_key = (id_mappa, pos_x, pos_y)
+
+        # Ricompensa solo se nuova coordinata
+        if coord_key not in self.coordinate_visitate:
+            self.coordinate_visitate.add(coord_key)
+            return 0.005
+
+        return 0.0
+
+    def _calcola_ricompense_healing(self, s: Dict[str, Any]) -> float:
+        """
+        Healing Reward: Proporzionale agli HP recuperati.
+        Premia l'uso di Pokemon Centers e pozioni per mantenere la squadra in salute.
+        """
+        hp_curr = s.get('hp_squadra', [0] * 6)
+        hp_max_curr = s.get('hp_max_squadra', [0] * 6)
+        hp_prev = self.stato_precedente.get('hp_squadra', [0] * 6)
+
+        reward = 0.0
+
+        for i in range(min(len(hp_curr), len(hp_prev), len(hp_max_curr))):
+            if hp_max_curr[i] > 0:  # Pokemon esiste
+                hp_recovered = hp_curr[i] - hp_prev[i]
+
+                # Ricompensa solo se HP aumentati (healing)
+                if hp_recovered > 0:
+                    # Reward proporzionale a % HP recuperati
+                    recovery_percent = hp_recovered / hp_max_curr[i]
+                    reward += recovery_percent * 5.0  # Max 5 reward per full heal
+
+        return reward
 
 class RilevatorStatoGioco:
     @lru_cache(maxsize=50)
@@ -322,17 +497,7 @@ class RilevatorStatoGioco:
             return np.std(dlg) > IPERPARAMETRI['SOGLIA_DIALOGO'] and np.sum(edges[0, :]) > 20 and np.sum(edges[-1, :]) > 20
         except: return False
 
-    def rileva_movimento_bloccato(self, curr: np.ndarray, prev: Optional[np.ndarray]) -> bool:
-        if prev is None or curr is None or curr.size == 0 or prev.size == 0 or curr.shape != (144, 160) or prev.shape != (144, 160):
-            return False
-        try:
-            diff = np.mean(np.abs(curr - prev))
-            center_var = np.var(curr[REGIONI_SCHERMO['REGIONE_CENTRALE']])
-            return diff < IPERPARAMETRI['SOGLIA_MOVIMENTO'] or center_var < IPERPARAMETRI['SOGLIA_BLOCCATO']
-        except: return False
-
 def calcola_dimensioni_output_conv(altezza_input, larghezza_input, layer_conv):
-    """Calcola le dimensioni output dopo i layer convoluzionali."""
     h, w = altezza_input, larghezza_input
     for dimensione_kernel, stride in layer_conv:
         h = (h - dimensione_kernel) // stride + 1
@@ -342,443 +507,278 @@ def calcola_dimensioni_output_conv(altezza_input, larghezza_input, layer_conv):
 DIMENSIONI_CONV_ESPLORAZIONE = calcola_dimensioni_output_conv(144, 160, [(8, 4), (4, 2), (3, 1)])
 DIMENSIONI_CONV_MENU = calcola_dimensioni_output_conv(144, 160, [(4, 2), (3, 2)])
 
-class ReteEsplorazione(nn.Module):
-    """DQN per esplorazione e navigazione."""
-    def __init__(self, n_azioni):
-        super(ReteEsplorazione, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
-        altezza_conv, larghezza_conv = DIMENSIONI_CONV_ESPLORAZIONE
-        dimensione_input_lineare = altezza_conv * larghezza_conv * 64
-        self.fc1 = nn.Linear(dimensione_input_lineare, 256)
-        self.fc2 = nn.Linear(256, n_azioni)
+if TORCH_AVAILABLE:
+    class ReteActorCriticBase(nn.Module):
+        """Base Actor-Critic network con shared backbone."""
+        def __init__(self, n_azioni, input_channels=4):
+            super(ReteActorCriticBase, self).__init__()
+            self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=8, stride=4)
+            self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+            self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
 
-    def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        return self.fc2(x)
+            altezza_conv, larghezza_conv = DIMENSIONI_CONV_ESPLORAZIONE
+            dimensione_input_lineare = altezza_conv * larghezza_conv * 64
 
-class ReteBattaglia(nn.Module):
-    def __init__(self, n_azioni):
-        super(ReteBattaglia, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
-        altezza_conv, larghezza_conv = DIMENSIONI_CONV_ESPLORAZIONE
-        dimensione_input_lineare = altezza_conv * larghezza_conv * 64
-        self.fc1 = nn.Linear(dimensione_input_lineare, 512)
-        self.fc2 = nn.Linear(512, 256)
-        self.fc3 = nn.Linear(256, n_azioni)
+            self.fc_shared = nn.Linear(dimensione_input_lineare, 512)
 
-    def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        return self.fc3(x)
+            self.policy_head = nn.Linear(512, n_azioni)
+            self.value_head = nn.Linear(512, 1)
 
-class ReteMenu(nn.Module):
-    def __init__(self, n_azioni):
-        super(ReteMenu, self).__init__()
-        self.conv1 = nn.Conv2d(1, 16, kernel_size=4, stride=2)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=2)
-        altezza_conv, larghezza_conv = DIMENSIONI_CONV_MENU
-        dimensione_input_lineare = altezza_conv * larghezza_conv * 32
-        self.fc1 = nn.Linear(dimensione_input_lineare, 128)
-        self.fc2 = nn.Linear(128, n_azioni)
+            self._initialize_weights()
 
-    def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        return self.fc2(x)
+        def _initialize_weights(self):
+            """Orthogonal initialization per stabilità."""
+            for m in self.modules():
+                if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+                    nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
 
-class GruppoRetiMultiple:
-    def __init__(self, n_azioni: int, device: Any) -> None:
-        self.device = device
-        self.n_azioni = n_azioni
+        def forward(self, x):
+            x = F.relu(self.conv1(x))
+            x = F.relu(self.conv2(x))
+            x = F.relu(self.conv3(x))
+            x = x.view(x.size(0), -1)
+            x = F.relu(self.fc_shared(x))
 
-        self.rete_esplorazione = ReteEsplorazione(n_azioni).to(device)
-        self.rete_battaglia = ReteBattaglia(n_azioni).to(device)
-        self.rete_menu = ReteMenu(n_azioni).to(device)
+            policy_logits = self.policy_head(x)
+            value = self.value_head(x)
 
-        self.target_esplorazione = ReteEsplorazione(n_azioni).to(device)
-        self.target_battaglia = ReteBattaglia(n_azioni).to(device)
-        self.target_menu = ReteMenu(n_azioni).to(device)
+            return policy_logits, value
 
-        # Perfeziona
-        self.ottimizzatore_esplorazione = optim.Adam(self.rete_esplorazione.parameters(), lr=IPERPARAMETRI['TASSO_APPRENDIMENTO'])
-        self.ottimizzatore_battaglia = optim.Adam(self.rete_battaglia.parameters(), lr=0.0003)
-        self.ottimizzatore_menu = optim.Adam(self.rete_menu.parameters(), lr=0.0002)
+    class ReteEsplorazionePPO(ReteActorCriticBase):
+        """PPO Actor-Critic per esplorazione."""
+        pass
 
-        # Adatta
-        self.scheduler_esplorazione = optim.lr_scheduler.ReduceLROnPlateau(self.ottimizzatore_esplorazione, patience=1000)
-        self.scheduler_battaglia = optim.lr_scheduler.ReduceLROnPlateau(self.ottimizzatore_battaglia, patience=500)
-        self.scheduler_menu = optim.lr_scheduler.ReduceLROnPlateau(self.ottimizzatore_menu, patience=500)
+    class ReteBattagliaPPO(ReteActorCriticBase):
+        """PPO Actor-Critic per battaglia (più capacità)."""
+        def __init__(self, n_azioni, input_channels=4):
+            super(ReteBattagliaPPO, self).__init__(n_azioni, input_channels)
+            altezza_conv, larghezza_conv = DIMENSIONI_CONV_ESPLORAZIONE
+            dimensione_input_lineare = altezza_conv * larghezza_conv * 64
 
-        self.target_esplorazione.load_state_dict(self.rete_esplorazione.state_dict())
-        self.target_battaglia.load_state_dict(self.rete_battaglia.state_dict())
-        self.target_menu.load_state_dict(self.rete_menu.state_dict())
+            self.fc_shared = nn.Linear(dimensione_input_lineare, 512)
+            self.fc_shared2 = nn.Linear(512, 256)
 
-        # Mescolanza
-        self.usa_precisione_mista = torch.cuda.is_available() and hasattr(torch.cuda, 'amp')
-        if self.usa_precisione_mista:
-            self.scaler = torch.cuda.amp.GradScaler()
-        
-    def scegli_azione(self, state: Any, game_state: str, epsilon: float) -> int:
-        if random.random() < epsilon:
-            return random.randint(0, self.n_azioni - 1)
-        
-        with torch.no_grad():
-            state_batch = state.unsqueeze(0)
+            self.policy_head = nn.Linear(256, n_azioni)
+            self.value_head = nn.Linear(256, 1)
+
+            self._initialize_weights()
+
+        def forward(self, x):
+            x = F.relu(self.conv1(x))
+            x = F.relu(self.conv2(x))
+            x = F.relu(self.conv3(x))
+            x = x.view(x.size(0), -1)
+            x = F.relu(self.fc_shared(x))
+            x = F.relu(self.fc_shared2(x))
+
+            policy_logits = self.policy_head(x)
+            value = self.value_head(x)
+
+            return policy_logits, value
+
+    class ReteMenuPPO(nn.Module):
+        """PPO Actor-Critic per menu (più piccolo)."""
+        def __init__(self, n_azioni, input_channels=4):
+            super(ReteMenuPPO, self).__init__()
+            self.conv1 = nn.Conv2d(input_channels, 16, kernel_size=4, stride=2)
+            self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=2)
+
+            altezza_conv, larghezza_conv = DIMENSIONI_CONV_MENU
+            dimensione_input_lineare = altezza_conv * larghezza_conv * 32
+
+            self.fc_shared = nn.Linear(dimensione_input_lineare, 128)
+
+            self.policy_head = nn.Linear(128, n_azioni)
+            self.value_head = nn.Linear(128, 1)
+
+            self._initialize_weights()
+
+        def _initialize_weights(self):
+            for m in self.modules():
+                if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+                    nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
+
+        def forward(self, x):
+            x = F.relu(self.conv1(x))
+            x = F.relu(self.conv2(x))
+            x = x.view(x.size(0), -1)
+            x = F.relu(self.fc_shared(x))
+
+            policy_logits = self.policy_head(x)
+            value = self.value_head(x)
+
+            return policy_logits, value
+
+    class GruppoRetiPPO:
+        """Gestore reti PPO multiple per stati di gioco."""
+        def __init__(self, n_azioni: int, device: Any, input_channels: int = 4) -> None:
+            self.device = device
+            self.n_azioni = n_azioni
+
+            self.rete_esplorazione = ReteEsplorazionePPO(n_azioni, input_channels).to(device)
+            self.rete_battaglia = ReteBattagliaPPO(n_azioni, input_channels).to(device)
+            self.rete_menu = ReteMenuPPO(n_azioni, input_channels).to(device)
+
+            self.ottimizzatore_esplorazione = optim.Adam(self.rete_esplorazione.parameters(), lr=IPERPARAMETRI['PPO_LR'])
+            self.ottimizzatore_battaglia = optim.Adam(self.rete_battaglia.parameters(), lr=IPERPARAMETRI['PPO_LR'])
+            self.ottimizzatore_menu = optim.Adam(self.rete_menu.parameters(), lr=IPERPARAMETRI['PPO_LR'])
+
+        def seleziona_rete(self, game_state: str):
+            """Seleziona rete e ottimizzatore per game state."""
             if game_state == "battle":
-                q_values = self.rete_battaglia(state_batch)
+                return self.rete_battaglia, self.ottimizzatore_battaglia
             elif game_state == "menu":
-                q_values = self.rete_menu(state_batch)
+                return self.rete_menu, self.ottimizzatore_menu
             else:
-                q_values = self.rete_esplorazione(state_batch)
-            return q_values.argmax().item()
-    
-    def addestra_rete(self, batch: List[Tuple], game_state: str, pesi_importanza: List[float] = None) -> Optional[Tuple[float, List[float]]]:
-        # Allena
-        if len(batch) < 4:
-            return None, []
+                return self.rete_esplorazione, self.ottimizzatore_esplorazione
 
-        states = []
-        next_states = []
-        for exp in batch:
-            if isinstance(exp[0], np.ndarray) and exp[0].shape == (144, 160):
-                states.append(exp[0])
-                next_states.append(exp[3])
+        def scegli_azione(self, state: torch.Tensor, game_state: str, deterministic: bool = False):
+            """Scelta azione con policy stocastica."""
+            rete, _ = self.seleziona_rete(game_state)
+            rete.eval()
 
-        if len(states) < 4:
-            return None, []
-
-        states_np = np.expand_dims(np.array(states), axis=1)
-        next_states_np = np.expand_dims(np.array(next_states), axis=1)
-
-        states_t = torch.FloatTensor(states_np).to(self.device)
-        actions = torch.LongTensor([e[1] for e in batch[:len(states)]]).to(self.device)
-        rewards = torch.FloatTensor([e[2] for e in batch[:len(states)]]).to(self.device)
-        next_states_t = torch.FloatTensor(next_states_np).to(self.device)
-        dones = torch.FloatTensor([e[4] for e in batch[:len(states)]]).to(self.device)
-
-        # Bilancia
-        if pesi_importanza is not None:
-            pesi_t = torch.FloatTensor(pesi_importanza[:len(states)]).to(self.device)
-        else:
-            pesi_t = torch.ones(len(states)).to(self.device)
-        
-        # Scegli
-        if game_state == "battle":
-            rete = self.rete_battaglia
-            rete_target = self.target_battaglia
-            ottimizzatore = self.ottimizzatore_battaglia
-            scheduler = self.scheduler_battaglia
-        elif game_state == "menu":
-            rete = self.rete_menu
-            rete_target = self.target_menu
-            ottimizzatore = self.ottimizzatore_menu
-            scheduler = self.scheduler_menu
-        else:
-            rete = self.rete_esplorazione
-            rete_target = self.target_esplorazione
-            ottimizzatore = self.ottimizzatore_esplorazione
-            scheduler = self.scheduler_esplorazione
-
-        # Addestra
-        if self.usa_precisione_mista:
-            with torch.cuda.amp.autocast():
-                current_q_values = rete(states_t).gather(1, actions.unsqueeze(1))
-                with torch.no_grad():
-                    next_q_values = rete_target(next_states_t).max(1)[0]
-                    target_q_values = rewards + (1 - dones) * IPERPARAMETRI['FATTORE_SCONTO'] * next_q_values
-
-                td_errors = current_q_values.squeeze() - target_q_values
-                loss = (pesi_t * (td_errors ** 2)).mean()
-
-            ottimizzatore.zero_grad()
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(ottimizzatore)
-            torch.nn.utils.clip_grad_norm_(rete.parameters(), max_norm=1.0)
-            self.scaler.step(ottimizzatore)
-            self.scaler.update()
-        else:
-            current_q_values = rete(states_t).gather(1, actions.unsqueeze(1))
             with torch.no_grad():
-                next_q_values = rete_target(next_states_t).max(1)[0]
-                target_q_values = rewards + (1 - dones) * IPERPARAMETRI['FATTORE_SCONTO'] * next_q_values
+                state_batch = state.unsqueeze(0) if state.dim() == 3 else state
+                policy_logits, value = rete(state_batch)
 
-            td_errors = current_q_values.squeeze() - target_q_values
-            loss = (pesi_t * (td_errors ** 2)).mean()
+                dist = Categorical(logits=policy_logits)
 
-            ottimizzatore.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(rete.parameters(), max_norm=1.0)
-            ottimizzatore.step()
+                if deterministic:
+                    action = policy_logits.argmax(dim=-1)
+                else:
+                    action = dist.sample()
 
-        # Aggiorna
-        scheduler.step(loss)
+                log_prob = dist.log_prob(action)
 
-        # Restituisci
-        td_errors_abs = torch.abs(td_errors).detach().cpu().numpy().tolist()
-        return loss.item(), td_errors_abs
-    
-    def aggiorna_reti_obiettivo(self) -> None:
-        tau = 0.005
-        for target_param, param in zip(self.target_esplorazione.parameters(), self.rete_esplorazione.parameters()):
-            target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
-        for target_param, param in zip(self.target_battaglia.parameters(), self.rete_battaglia.parameters()):
-            target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
-        for target_param, param in zip(self.target_menu.parameters(), self.rete_menu.parameters()):
-            target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
+            return action.item(), log_prob.item(), value.item()
+
+        def addestra_ppo(self, batch_data: Dict, game_state: str) -> Dict[str, float]:
+            """Training PPO con clipped surrogate objective."""
+            rete, ottimizzatore = self.seleziona_rete(game_state)
+            rete.train()
+
+            states = torch.stack(batch_data['states']).to(self.device)
+            actions = torch.tensor(batch_data['actions'], dtype=torch.long).to(self.device)
+            old_log_probs = torch.tensor(batch_data['old_log_probs'], dtype=torch.float32).to(self.device)
+            advantages = torch.tensor(batch_data['advantages'], dtype=torch.float32).to(self.device)
+            returns = torch.tensor(batch_data['returns'], dtype=torch.float32).to(self.device)
+
+            # Normalizza advantages
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+            total_policy_loss = 0
+            total_value_loss = 0
+            total_entropy = 0
+            n_updates = 0
+
+            dataset_size = len(states)
+            minibatch_size = IPERPARAMETRI['PPO_MINIBATCH_SIZE']
+
+            for epoch in range(IPERPARAMETRI['PPO_EPOCHS']):
+                indices = torch.randperm(dataset_size)
+
+                for start in range(0, dataset_size, minibatch_size):
+                    end = min(start + minibatch_size, dataset_size)
+                    mb_indices = indices[start:end]
+
+                    mb_states = states[mb_indices]
+                    mb_actions = actions[mb_indices]
+                    mb_old_log_probs = old_log_probs[mb_indices]
+                    mb_advantages = advantages[mb_indices]
+                    mb_returns = returns[mb_indices]
+
+                    policy_logits, values = rete(mb_states)
+                    dist = Categorical(logits=policy_logits)
+
+                    new_log_probs = dist.log_prob(mb_actions)
+                    entropy = dist.entropy().mean()
+
+                    ratio = torch.exp(new_log_probs - mb_old_log_probs)
+
+                    surr1 = ratio * mb_advantages
+                    surr2 = torch.clamp(ratio, 1.0 - IPERPARAMETRI['PPO_CLIP_EPSILON'],
+                                       1.0 + IPERPARAMETRI['PPO_CLIP_EPSILON']) * mb_advantages
+                    policy_loss = -torch.min(surr1, surr2).mean()
+
+                    value_loss = F.mse_loss(values.squeeze(), mb_returns)
+
+                    loss = (policy_loss +
+                           IPERPARAMETRI['PPO_VALUE_COEFF'] * value_loss -
+                           IPERPARAMETRI['PPO_ENTROPY_COEFF'] * entropy)
+
+                    ottimizzatore.zero_grad()
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(rete.parameters(), IPERPARAMETRI['PPO_MAX_GRAD_NORM'])
+                    ottimizzatore.step()
+
+                    total_policy_loss += policy_loss.item()
+                    total_value_loss += value_loss.item()
+                    total_entropy += entropy.item()
+                    n_updates += 1
+
+            return {
+                'policy_loss': total_policy_loss / n_updates,
+                'value_loss': total_value_loss / n_updates,
+                'entropy': total_entropy / n_updates
+            }
 
 class AgentePokemonAI:
+    """Agente AI Pokemon con PPO."""
     def __init__(self, rom_path: str, headless: bool = False) -> None:
-        self.rom_name = os.path.splitext(os.path.basename(rom_path))[0]
-        self.save_dir = f"pokemon_ai_saves_{self.rom_name}"
+        if not TORCH_AVAILABLE or not DEPS_AVAILABLE:
+            raise ErroreAIPokemon("Missing dependencies. Install: torch, pyboy, keyboard, PIL, cv2")
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {self.device}")
+
+        self.pyboy = PyBoy(rom_path, window="headless" if headless else "SDL2")
+        self.pyboy.set_emulation_speed(0)
+
+        # PyBoy 2.6.0+ uses string-based button API
+        self.actions = [
+            None,      # noop
+            'up',      # up arrow
+            'down',    # down arrow
+            'left',    # left arrow
+            'right',   # right arrow
+            'a',       # A button
+            'b',       # B button
+            'start',   # start button
+            'select'   # select button
+        ]
+
+        rom_name = os.path.splitext(os.path.basename(rom_path))[0]
+        self.save_dir = f"pokemon_ai_saves_{rom_name}"
         os.makedirs(self.save_dir, exist_ok=True)
 
-        self.model_path = os.path.join(self.save_dir, "model.pth")
-        self.memory_path = os.path.join(self.save_dir, "memory.pkl")
-        self.stats_path = os.path.join(self.save_dir, "stats.json")
+        self.model_path = os.path.join(self.save_dir, "model_ppo.pth")
+        self.stats_path = os.path.join(self.save_dir, "stats_ppo.json")
 
-        self.pyboy = pyboy.PyBoy(rom_path, window="null" if headless else "SDL2", debug=False)
-        self.rilevatore_stato = RilevatorStatoGioco()
-        self.lettore_memoria = LettoreMemoriaGioco(self.pyboy)
+        input_channels = IPERPARAMETRI['FRAME_STACK']
+        self.gruppo_reti = GruppoRetiPPO(len(self.actions), self.device, input_channels)
 
+        self.trajectory_buffer = BufferTraiettorie()
+        self.frame_stack = FrameStack(IPERPARAMETRI['FRAME_STACK'])
         self.cache_immagini = CacheImmagini()
+        self.lettore_memoria = LettoreMemoriaGioco(self.pyboy)
+        self.rilevatore_stato = RilevatorStatoGioco()
         self.salvatore_asincrono = SalvatoreAsincrono()
-        self.beta_priorita = IPERPARAMETRI['BETA_PRIORITA']
 
-        WE = WindowEvent
-        self.actions = [[], [WE.PRESS_ARROW_UP], [WE.PRESS_ARROW_DOWN], [WE.PRESS_ARROW_LEFT], [WE.PRESS_ARROW_RIGHT],
-                        [WE.PRESS_BUTTON_A], [WE.PRESS_BUTTON_B], [WE.PRESS_BUTTON_START], [WE.PRESS_BUTTON_SELECT]]
-        self.release_map = {WE.PRESS_ARROW_UP: WE.RELEASE_ARROW_UP, WE.PRESS_ARROW_DOWN: WE.RELEASE_ARROW_DOWN,
-                           WE.PRESS_ARROW_LEFT: WE.RELEASE_ARROW_LEFT, WE.PRESS_ARROW_RIGHT: WE.RELEASE_ARROW_RIGHT,
-                           WE.PRESS_BUTTON_A: WE.RELEASE_BUTTON_A, WE.PRESS_BUTTON_B: WE.RELEASE_BUTTON_B,
-                           WE.PRESS_BUTTON_START: WE.RELEASE_BUTTON_START, WE.PRESS_BUTTON_SELECT: WE.RELEASE_BUTTON_SELECT}
-        
-        self.stats = self._load_stats()
-        self.epsilon = max(IPERPARAMETRI['EPSILON_MINIMO'], 0.9 * (0.995 ** (self.stats.get('total_frames', 0) / 10000)))
-        # Prioritizza
-        self.memory = BufferRiproduzioneConPriorita(IPERPARAMETRI['DIMENSIONE_MEMORIA'], IPERPARAMETRI['ALPHA_PRIORITA'])
-        
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.gruppo_reti = GruppoRetiMultiple(len(self.actions), self.device)
-        
-        self.frame_count = 0
-        self.episode_count = self.stats.get('episodes', 0)
-        self.total_reward = 0
-        self.best_reward = self.stats.get('best_reward', float('-inf'))
         self.current_game_state = "exploring"
-        self.last_memory_check = 0
-        self.memory_check_interval = IPERPARAMETRI['INTERVALLO_CONTROLLO_MEMORIA']
+        self.last_screen_array = None
+
+        self.stats = self._load_stats()
+        self.episode_count = 0
+        self.frame_count = 0
+        self.total_reward = 0
         self.reward_history = deque(maxlen=1000)
         self.loss_history = deque(maxlen=100)
-        self.early_stopping_patience = 2000
-        self.best_avg_reward = float('-inf')
-        self.patience_counter = 0
-        self.min_episodes_before_stopping = 50
-        
-        self._load_memory()
 
-    def _has_torch_multiagent(self) -> bool:
-        return torch_disponibile and hasattr(self, 'multi_agent')
-
-    def _safe_choose_action(self, state: Any, game_state: str) -> int:
-        if self._has_torch_multiagent():
-            return self.gruppo_reti.scegli_azione(state, game_state, self.epsilon)
-        else:
-            return random.randint(0, len(self.actions) - 1)
-
-    def _safe_replay(self) -> None:
-        # Ripeti
-        if not self._has_torch_multiagent() or len(self.memory) < IPERPARAMETRI['DIMENSIONE_BATCH']:
-            return
-        try:
-            # Incrementa
-            self.beta_priorita = min(1.0, self.beta_priorita + 0.0001)
-
-            # Campiona
-            esperienze, pesi, indici = self.memory.campiona(IPERPARAMETRI['DIMENSIONE_BATCH'], self.beta_priorita)
-
-            if not esperienze:
-                return
-
-            # Organizza
-            explorer_batch, explorer_pesi, explorer_indici = [], [], []
-            battle_batch, battle_pesi, battle_indici = [], [], []
-            menu_batch, menu_pesi, menu_indici = [], [], []
-
-            for i, (exp, peso, idx) in enumerate(zip(esperienze, pesi, indici)):
-                if len(exp) >= 6:
-                    game_state = exp[5]
-                    if game_state == "battle":
-                        battle_batch.append(exp)
-                        battle_pesi.append(peso)
-                        battle_indici.append(idx)
-                    elif game_state == "menu":
-                        menu_batch.append(exp)
-                        menu_pesi.append(peso)
-                        menu_indici.append(idx)
-                    else:
-                        explorer_batch.append(exp)
-                        explorer_pesi.append(peso)
-                        explorer_indici.append(idx)
-
-            loss_total = 0
-            losses_count = 0
-            tutti_td_errors = []
-            tutti_indici = []
-
-            # Addestra
-            batch_configs = [
-                (explorer_batch, explorer_pesi, explorer_indici, 'exploring'),
-                (battle_batch, battle_pesi, battle_indici, 'battle'),
-                (menu_batch, menu_pesi, menu_indici, 'menu')
-            ]
-
-            for batch, pesi_batch, indici_batch, game_state in batch_configs:
-                if len(batch) >= 4:
-                    risultato = self.gruppo_reti.addestra_rete(batch, game_state, pesi_batch)
-                    if risultato:
-                        loss, td_errors = risultato
-                        loss_total += loss
-                        losses_count += 1
-                        tutti_td_errors.extend(td_errors)
-                        tutti_indici.extend(indici_batch)
-
-            # Riordina
-            if tutti_td_errors and tutti_indici:
-                self.memory.aggiorna_priorita(tutti_indici, tutti_td_errors)
-
-            if losses_count > 0:
-                avg_loss = loss_total / losses_count
-                self.loss_history.append(avg_loss)
-
-            if self.epsilon > IPERPARAMETRI['EPSILON_MINIMO']:
-                self.epsilon *= IPERPARAMETRI['DECADIMENTO_EPSILON']
-
-        except Exception as e:
-            raise ErroreAIPokemon(f"Training fallito: {e}")
-
-    def _safe_update_target_model(self) -> None:
-        if self._has_torch_multiagent():
-            self.gruppo_reti.aggiorna_reti_obiettivo()
-
-    def _safe_save_model(self) -> None:
-        if self._has_torch_multiagent():
-            try:
-                checkpoint = {'explorer_state': self.gruppo_reti.rete_esplorazione.state_dict(), 'battle_state': self.gruppo_reti.rete_battaglia.state_dict(), 'menu_state': self.gruppo_reti.rete_menu.state_dict(), 'epsilon': self.epsilon, 'episode': self.episode_count, 'frame': self.frame_count}
-                torch.save(checkpoint, self.model_path)
-            except Exception as e:
-                raise ErroreAIPokemon(f"Save error: {e}")
-
-    def _get_screen_tensor(self):
-        # Ottieni
-        screen = self.pyboy.screen.image
-        gray = np.array(screen.convert('L'))
-        self.last_screen_array = gray.copy()
-
-        # Controlla
-        cached_result = self.cache_immagini.ottieni(gray)
-        if cached_result is not None:
-            if self._has_torch_multiagent():
-                return torch.from_numpy(cached_result).unsqueeze(0).to(self.device)
-            return cached_result
-
-        # Preprocessa
-        normalized = gray.astype(np.float32) / 255.0
-        self.cache_immagini.salva(gray, normalized)
-
-        if self._has_torch_multiagent():
-            tensor = torch.from_numpy(normalized).unsqueeze(0)
-            return tensor.to(self.device)
-        return normalized
-
-    def _detect_game_state(self, screen_array):
-        old_state = self.current_game_state
-        
-        if self.rilevatore_stato.rileva_battaglia(screen_array):
-            self.current_game_state = "battle"
-        elif self.rilevatore_stato.rileva_dialogo(screen_array):
-            self.current_game_state = "dialogue"
-        elif self.rilevatore_stato.rileva_menu(screen_array):
-            self.current_game_state = "menu"
-        else:
-            self.current_game_state = "exploring"
-            
-        return self.current_game_state
-
-    def _calculate_reward(self, screen_tensor, previous_screen, action):
-        reward = 0
-
-        if hasattr(self, 'last_screen_array'):
-            game_state = self._detect_game_state(self.last_screen_array)
-        else:
-            game_state = "exploring"
-
-        # Controlla
-        memory_state = self.lettore_memoria.ottieni_stato_corrente()
-        memory_reward = self.lettore_memoria.calcola_ricompense_eventi(memory_state)
-        reward += memory_reward
-
-        # Movimento
-        if previous_screen is not None:
-            if self._has_torch_multiagent():
-                diff = torch.abs(screen_tensor - previous_screen).mean().item()
-            else:
-                diff = np.mean(np.abs(screen_tensor - previous_screen))
-
-            # Scala
-            movement_threshold = 0.02
-            if game_state == "dialogue":
-                movement_threshold = 0.005  # Dialogo
-            elif game_state == "battle":
-                movement_threshold = 0.01   # Battaglia
-
-            if diff > movement_threshold:
-                reward += min(diff * 10, 2.0)  # Limita
-            elif diff < movement_threshold * 0.1:
-                reward -= 0.05  # Penalizza
-
-        self.reward_history.append(reward)
-        self.total_reward += reward
-        return reward
-
-    def scegli_azione(self, state):
-        game_state = self.current_game_state if hasattr(self, 'current_game_state') else "exploring"
-        return self._safe_choose_action(state, game_state)
-
-    def memorizza_esperienza(self, state, action, reward, next_state, done):
-        # Salva
-        if self._has_torch_multiagent():
-            state_np = state.squeeze(0).cpu().numpy()
-            next_state_np = next_state.squeeze(0).cpu().numpy()
-        else:
-            state_np = state
-            next_state_np = next_state
-
-        game_state = self.current_game_state if hasattr(self, 'current_game_state') else "exploring"
-        experience = (state_np, action, reward, next_state_np, done, game_state)
-
-        # Calcola
-        priorita_iniziale = abs(reward) + IPERPARAMETRI['EPSILON_PRIORITA']
-        self.memory.aggiungi(experience, priorita_iniziale)
-
-    def esegui_replay(self):
-        self._safe_replay()
-
-    def aggiorna_rete_target(self):
-        self._safe_update_target_model()
+        self._load_checkpoint()
 
     def _load_stats(self):
         if os.path.exists(self.stats_path):
@@ -790,150 +790,250 @@ class AgentePokemonAI:
         final_state = self.lettore_memoria.ottieni_stato_corrente()
         if final_state:
             self.stats['final_state'] = final_state
-        
-        self.stats.update({'episodes': self.episode_count, 'total_frames': self.stats.get('total_frames', 0) + self.frame_count, 'best_reward': max(self.best_reward, self.total_reward)})
-        
+
+        self.stats.update({
+            'episodes': self.episode_count,
+            'total_frames': self.stats.get('total_frames', 0) + self.frame_count,
+            'best_reward': max(self.stats.get('best_reward', float('-inf')), self.total_reward)
+        })
+
         if len(self.reward_history) > 0:
             self.stats['avg_reward_last_1000'] = float(np.mean(list(self.reward_history)))
-        
+
         with open(self.stats_path, 'w') as f:
             json.dump(self.stats, f, indent=2)
 
-    def _save_memory(self):
-        memory_data = {'memory': list(self.memory)[-10000:]}
-        with open(self.memory_path, 'wb') as f:
-            pickle.dump(memory_data, f)
-
-    def _load_memory(self):
-        # Carica
-        if os.path.exists(self.memory_path):
+    def _load_checkpoint(self):
+        if os.path.exists(self.model_path):
             try:
-                with open(self.memory_path, 'rb') as f:
-                    memory_data = pickle.load(f)
-                for exp in memory_data.get('memory', [])[-5000:]:
-                    if len(exp) >= 5 and isinstance(exp[0], np.ndarray):
-                        # Inizializza
-                        priorita = abs(exp[2]) + IPERPARAMETRI['EPSILON_PRIORITA'] if len(exp) > 2 else 1.0
-                        self.memory.aggiungi(exp, priorita)
+                checkpoint = torch.load(self.model_path, map_location=self.device)
+                self.gruppo_reti.rete_esplorazione.load_state_dict(checkpoint['explorer_state'])
+                self.gruppo_reti.rete_battaglia.load_state_dict(checkpoint['battle_state'])
+                self.gruppo_reti.rete_menu.load_state_dict(checkpoint['menu_state'])
+                self.episode_count = checkpoint.get('episode', 0)
+                self.frame_count = checkpoint.get('frame', 0)
+                print(f"Checkpoint loaded: episode {self.episode_count}, frame {self.frame_count}")
             except Exception as e:
-                print(f"Errore nel caricamento memoria: {e}")
+                print(f"Error loading checkpoint: {e}")
+
+    def _save_checkpoint(self):
+        checkpoint = {
+            'explorer_state': self.gruppo_reti.rete_esplorazione.state_dict(),
+            'battle_state': self.gruppo_reti.rete_battaglia.state_dict(),
+            'menu_state': self.gruppo_reti.rete_menu.state_dict(),
+            'episode': self.episode_count,
+            'frame': self.frame_count
+        }
+        self.salvatore_asincrono.salva_asincrono(lambda d: torch.save(d, self.model_path), checkpoint)
+
+    def _get_screen_tensor(self):
+        """Ottieni frame corrente preprocessato."""
+        screen = self.pyboy.screen.image  # PyBoy 2.6.0+ API
+        gray = np.array(screen.convert('L'))
+        self.last_screen_array = gray.copy()
+
+        cached = self.cache_immagini.ottieni(gray)
+        if cached is not None:
+            normalized = cached
+        else:
+            normalized = gray.astype(np.float32) / 255.0
+            self.cache_immagini.salva(gray, normalized)
+
+        tensor = torch.from_numpy(normalized).unsqueeze(0)
+        return tensor.to(self.device)
+
+    def _detect_game_state(self, screen_array):
+        if self.rilevatore_stato.rileva_battaglia(screen_array):
+            self.current_game_state = "battle"
+        elif self.rilevatore_stato.rileva_dialogo(screen_array):
+            self.current_game_state = "dialogue"
+        elif self.rilevatore_stato.rileva_menu(screen_array):
+            self.current_game_state = "menu"
+        else:
+            self.current_game_state = "exploring"
+
+        return self.current_game_state
+
+    def _calculate_reward(self, screen_tensor, previous_screen):
+        reward = 0
+
+        if hasattr(self, 'last_screen_array'):
+            game_state = self._detect_game_state(self.last_screen_array)
+        else:
+            game_state = "exploring"
+
+        memory_state = self.lettore_memoria.ottieni_stato_corrente()
+        memory_reward = self.lettore_memoria.calcola_ricompense_eventi(memory_state)
+        reward += memory_reward
+
+        if previous_screen is not None:
+            diff = torch.abs(screen_tensor - previous_screen).mean().item()
+
+            movement_threshold = 0.02
+            if game_state == "dialogue":
+                movement_threshold = 0.005
+            elif game_state == "battle":
+                movement_threshold = 0.01
+
+            if diff > movement_threshold:
+                reward += min(diff * 10, 2.0)
+            elif diff < movement_threshold * 0.1:
+                reward -= 0.05
+
+        self.reward_history.append(reward)
+        self.total_reward += reward
+        return reward
 
     def avvia_training(self) -> None:
+        """Main PPO training loop with emulator optimizations."""
         paused = False
-        previous_screen = None
+        previous_single_frame = None
         last_save_frame = 0
-        
+
+        # Performance tracking
+        perf_start_time = time.time()
+        perf_frame_count = 0
+
+        # Initialize frame stack
+        initial_frame = self._get_screen_tensor()
+        self.frame_stack.reset(initial_frame)
+
         try:
             while True:
                 if keyboard.is_pressed('escape'):
                     break
-                
+
                 if keyboard.is_pressed('space'):
                     paused = not paused
                     time.sleep(0.3)
-                
+
                 if paused:
                     self.pyboy.tick()
                     continue
-                
-                state = self._get_screen_tensor()
-                action = self.scegli_azione(state)
 
-                for btn in self.actions[action]: self.pyboy.send_input(btn)
+                single_frame = self._get_screen_tensor()
+                self.frame_stack.aggiungi(single_frame)
+                stacked_state = self.frame_stack.ottieni_stack()
 
-                wait_frames = {"dialogue": 2, "battle": 6}.get(self.current_game_state, 4)
-                for _ in range(wait_frames): self.pyboy.tick()
+                action, log_prob, value = self.gruppo_reti.scegli_azione(
+                    stacked_state, self.current_game_state
+                )
 
-                for btn in self.actions[action]:
-                    if btn in self.release_map: self.pyboy.send_input(self.release_map[btn])
+                # PyBoy 2.6.0+ API: use button_press/button_release
+                button = self.actions[action]
+                if button is not None:  # Skip noop
+                    self.pyboy.button_press(button)
 
-                next_state = self._get_screen_tensor()
-                reward = self._calculate_reward(next_state, previous_screen, action)
+                # OPTIMIZATION: Adaptive frameskipping based on game state
+                frameskip_map = {
+                    "dialogue": IPERPARAMETRI['FRAMESKIP_DIALOGUE'],
+                    "battle": IPERPARAMETRI['FRAMESKIP_BATTLE'],
+                    "menu": IPERPARAMETRI['FRAMESKIP_MENU'],
+                    "exploring": IPERPARAMETRI['FRAMESKIP_EXPLORING']
+                }
+                frameskip = frameskip_map.get(self.current_game_state, IPERPARAMETRI['FRAMESKIP_BASE'])
 
-                if previous_screen is not None:
-                    self.memorizza_esperienza(state, action, reward, next_state, False)
+                # OPTIMIZATION: Use tick(count=X, render=False) for speed
+                self.pyboy.tick(count=frameskip, render=IPERPARAMETRI['RENDER_ENABLED'])
 
-                if self.frame_count % 4 == 0 and len(self.memory) >= IPERPARAMETRI['DIMENSIONE_BATCH']:
-                    self.esegui_replay()
+                # Release button after ticking
+                if button is not None:
+                    self.pyboy.button_release(button)
 
-                if self.frame_count % IPERPARAMETRI['FREQUENZA_AGGIORNAMENTO_TARGET'] == 0:
-                    self.aggiorna_rete_target()
+                next_single_frame = self._get_screen_tensor()
+                reward = self._calculate_reward(next_single_frame, previous_single_frame)
+
+                # Performance monitoring
+                perf_frame_count += 1
+                if perf_frame_count % IPERPARAMETRI['PERFORMANCE_LOG_INTERVAL'] == 0:
+                    elapsed = time.time() - perf_start_time
+                    fps = perf_frame_count / elapsed
+                    print(f"Performance: {fps:.1f} FPS (avg), Frame: {self.frame_count}, State: {self.current_game_state}")
+                    perf_start_time = time.time()
+                    perf_frame_count = 0
+
+                self.trajectory_buffer.aggiungi(
+                    stacked_state.cpu(),
+                    action,
+                    reward,
+                    value,
+                    log_prob,
+                    False,
+                    self.current_game_state
+                )
+
+                if self.trajectory_buffer.is_full():
+                    # Calcola GAE e addestra
+                    self.frame_stack.aggiungi(next_single_frame)
+                    next_stacked_state = self.frame_stack.ottieni_stack()
+                    _, _, next_value = self.gruppo_reti.scegli_azione(
+                        next_stacked_state, self.current_game_state, deterministic=True
+                    )
+
+                    advantages, returns = self.trajectory_buffer.calcola_vantaggi_gae(next_value)
+
+                    # Train su ciascun game state presente nel buffer
+                    game_states_in_buffer = set(self.trajectory_buffer.game_states)
+                    for gs in game_states_in_buffer:
+                        # Filtra batch per game state
+                        indices = [i for i, g in enumerate(self.trajectory_buffer.game_states) if g == gs]
+                        if len(indices) < IPERPARAMETRI['PPO_MINIBATCH_SIZE']:
+                            continue
+
+                        batch_data = {
+                            'states': [self.trajectory_buffer.states[i] for i in indices],
+                            'actions': [self.trajectory_buffer.actions[i] for i in indices],
+                            'old_log_probs': [self.trajectory_buffer.log_probs[i] for i in indices],
+                            'advantages': [advantages[i] for i in indices],
+                            'returns': [returns[i] for i in indices],
+                            'game_states': [gs] * len(indices)
+                        }
+
+                        metrics = self.gruppo_reti.addestra_ppo(batch_data, gs)
+                        self.loss_history.append(metrics['policy_loss'])
+
+                        if self.frame_count % 100 == 0:
+                            print(f"Frame {self.frame_count} [{gs}] - "
+                                  f"Policy Loss: {metrics['policy_loss']:.4f}, "
+                                  f"Value Loss: {metrics['value_loss']:.4f}, "
+                                  f"Entropy: {metrics['entropy']:.4f}, "
+                                  f"Reward: {self.total_reward:.2f}")
+
+                    self.trajectory_buffer.reset()
 
                 if self.frame_count - last_save_frame >= IPERPARAMETRI['FREQUENZA_SALVATAGGIO']:
-                    self._save_all()
+                    self._save_checkpoint()
+                    self._save_stats()
                     last_save_frame = self.frame_count
-                    if self._should_early_stop():
-                        print(f"Early stopping at frame {self.frame_count}")
-                        break
-                
-                previous_screen = next_state
+                    print(f"Checkpoint saved at frame {self.frame_count}")
+
+                previous_single_frame = next_single_frame
                 self.frame_count += 1
-                    
+
         except KeyboardInterrupt:
-            pass
-        
+            print("Training interrupted by user")
+
         finally:
-            self._save_all()
+            self._save_checkpoint()
+            self._save_stats()
             self.pyboy.stop()
-
-    def _should_early_stop(self) -> bool:
-        min_frames = self.min_episodes_before_stopping * 1000
-        if self.frame_count < min_frames or len(self.reward_history) < 100: return False
-
-        curr_avg = np.mean(list(self.reward_history)[-100:])
-        if curr_avg > self.best_avg_reward * 1.01:
-            self.best_avg_reward = curr_avg
-            self.patience_counter = 0
-        else:
-            self.patience_counter += 1
-
-        return self.patience_counter >= self.early_stopping_patience
-
-    def _save_all(self) -> None:
-        dati_modello = None
-        if self._has_torch_multiagent():
-            dati_modello = {
-                'explorer_state': self.gruppo_reti.rete_esplorazione.state_dict(),
-                'battle_state': self.gruppo_reti.rete_battaglia.state_dict(),
-                'menu_state': self.gruppo_reti.rete_menu.state_dict(),
-                'epsilon': self.epsilon,
-                'episode': self.episode_count,
-                'frame': self.frame_count
-            }
-
-        dati_memoria = {'memory': list(self.memory.buffer)[-10000:]}
-
-        final_state = self.lettore_memoria.ottieni_stato_corrente()
-        dati_stats = self.stats.copy()
-        dati_stats.update({
-            'episodes': self.episode_count,
-            'total_frames': self.stats.get('total_frames', 0) + self.frame_count,
-            'best_reward': max(self.best_reward, self.total_reward)
-        })
-        if final_state:
-            dati_stats['final_state'] = final_state
-        if len(self.reward_history) > 0:
-            dati_stats['avg_reward_last_1000'] = float(np.mean(list(self.reward_history)))
-
-        if dati_modello:
-            self.salvatore_asincrono.salva_asincrono(lambda d: torch.save(d, self.model_path), dati_modello)
-
-        self.salvatore_asincrono.salva_asincrono(lambda d: pickle.dump(d, open(self.memory_path, 'wb')), dati_memoria)
-        self.salvatore_asincrono.salva_asincrono(lambda d: json.dump(d, open(self.stats_path, 'w'), indent=2), dati_stats)
+            print(f"Training completed. Total frames: {self.frame_count}, Total reward: {self.total_reward:.2f}")
 
 def principale() -> None:
     while True:
         rom_path = input("Pokemon ROM path (.gb/.gbc): ").strip().strip('"')
         if os.path.exists(rom_path) and (rom_path.lower().endswith('.gbc') or rom_path.lower().endswith('.gb')) and os.path.getsize(rom_path) > 0:
             break
-    
+
     headless = input("Headless mode (y/N): ").lower().strip() == 'y'
-    
+
     try:
         agente = AgentePokemonAI(rom_path, headless=headless)
         agente.avvia_training()
     except Exception as e:
         print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     principale()
