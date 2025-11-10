@@ -1,8 +1,18 @@
 # Pokemon AI Agent
 
-AI agent that learns to play Pokemon Red/Blue using **Proximal Policy Optimization (PPO)** with PyBoy.
+Autonomous AI agent that plays Pokemon Red/Blue completely by itself using **Proximal Policy Optimization (PPO)** with PyBoy.
 
 > **⚡ NEW**: Migrated from DQN to PPO - **4-6x faster convergence** (<1 hour vs 4-6 hours)!
+
+## Overview
+
+This is a fully autonomous AI agent that plays Pokemon Red/Blue from start to finish without any human intervention. The agent uses reinforcement learning to learn optimal strategies for:
+
+- Navigating the game world
+- Battling wild Pokemon and trainers
+- Catching Pokemon
+- Obtaining gym badges
+- Completing the main story
 
 ![Pokemon AI Screenshot](Screenshot%202025-09-13%20221934.png)
 
