@@ -3,7 +3,7 @@ from hyperparameters import HYPERPARAMETERS
 
 
 class TrajectoryBuffer:
-    """Buffer for PPO trajectories with GAE calculation."""
+    """Buffer per traiettorie PPO con calcolo GAE."""
     def __init__(self, capacity: int = HYPERPARAMETERS['PPO_TRAJECTORY_LENGTH']):
         self.capacity = capacity
         self.reset()
@@ -33,7 +33,7 @@ class TrajectoryBuffer:
         return len(self) >= self.capacity
 
     def calculate_gae_advantages(self, next_value):
-        """Calculate advantages with GAE-Lambda."""
+        """Calcola vantaggi con GAE-Lambda."""
         advantages = []
         gae = 0
 
@@ -51,7 +51,7 @@ class TrajectoryBuffer:
         return advantages, returns
 
     def get_batch(self, advantages, returns):
-        """Returns data for training."""
+        """Ritorna dati per training."""
         return {
             'states': self.states,
             'actions': self.actions,

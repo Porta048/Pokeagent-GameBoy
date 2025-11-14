@@ -1,16 +1,22 @@
-from typing import List
+"""Architetture delle reti neurali PPO per il gioco Pokemon."""
+from typing import List, Dict, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from hyperparameters import HYPERPARAMETERS
 from utils import EXPLORATION_CONV_DIMENSIONS, MENU_CONV_DIMENSIONS
+from errors import PokemonAIError
 
 
 class BaseActorCriticNetwork(nn.Module):
-    """Base Actor-Critic network with shared backbone."""
-    def __init__(self, n_actions, input_channels=4):
-        super(BaseActorCriticNetwork, self).__init__()
+    """
+    Rete Actor-Critic base con backbone condiviso.
+    Architettura CNN per estrarre features visive + heads separati per policy e value.
+    """
+
+    def __init__(self, n_actions: int, input_channels: int = 4):
+        super().__init__()
         self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=8, stride=4)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
@@ -19,21 +25,20 @@ class BaseActorCriticNetwork(nn.Module):
         linear_input_size = conv_height * conv_width * 64
 
         self.fc_shared = nn.Linear(linear_input_size, 512)
-
         self.policy_head = nn.Linear(512, n_actions)
         self.value_head = nn.Linear(512, 1)
 
         self._initialize_weights()
 
-    def _initialize_weights(self):
-        """Orthogonal initialization for stability."""
+    def _initialize_weights(self) -> None:
+        """Inizializzazione ortogonale per stabilità del training."""
         for m in self.modules():
-            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+            if isinstance(m, (nn.Conv2d, nn.Linear)):
                 nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
@@ -47,27 +52,31 @@ class BaseActorCriticNetwork(nn.Module):
 
 
 class ExplorationPPO(BaseActorCriticNetwork):
-    """PPO Actor-Critic for exploration."""
-    def __init__(self, n_actions, input_channels=4):
-        super(ExplorationPPO, self).__init__(n_actions, input_channels)
+    """Rete PPO specializzata per esplorazione del mondo di gioco."""
+
+    def __init__(self, n_actions: int, input_channels: int = 4):
+        super().__init__(n_actions, input_channels)
 
 
 class BattlePPO(BaseActorCriticNetwork):
-    """PPO Actor-Critic for battle (more capacity)."""
-    def __init__(self, n_actions, input_channels=4):
-        super(BattlePPO, self).__init__(n_actions, input_channels)
+    """
+    Rete PPO specializzata per combattimenti.
+    Maggiore capacità (layer aggiuntivo) per gestire tattiche complesse.
+    """
+
+    def __init__(self, n_actions: int, input_channels: int = 4):
+        super().__init__(n_actions, input_channels)
         conv_height, conv_width = EXPLORATION_CONV_DIMENSIONS
         linear_input_size = conv_height * conv_width * 64
 
         self.fc_shared = nn.Linear(linear_input_size, 512)
         self.fc_shared2 = nn.Linear(512, 256)
-
         self.policy_head = nn.Linear(256, n_actions)
         self.value_head = nn.Linear(256, 1)
 
         self._initialize_weights()
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
@@ -82,9 +91,13 @@ class BattlePPO(BaseActorCriticNetwork):
 
 
 class MenuPPO(nn.Module):
-    """PPO Actor-Critic for menu (smaller)."""
-    def __init__(self, n_actions, input_channels=4):
-        super(MenuPPO, self).__init__()
+    """
+    Rete PPO leggera specializzata per navigazione menu.
+    Architettura ridotta per elaborazione veloce delle interfacce UI.
+    """
+
+    def __init__(self, n_actions: int, input_channels: int = 4):
+        super().__init__()
         self.conv1 = nn.Conv2d(input_channels, 16, kernel_size=4, stride=2)
         self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=2)
 
@@ -92,20 +105,19 @@ class MenuPPO(nn.Module):
         linear_input_size = conv_height * conv_width * 32
 
         self.fc_shared = nn.Linear(linear_input_size, 128)
-
         self.policy_head = nn.Linear(128, n_actions)
         self.value_head = nn.Linear(128, 1)
 
         self._initialize_weights()
 
-    def _initialize_weights(self):
+    def _initialize_weights(self) -> None:
         for m in self.modules():
-            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+            if isinstance(m, (nn.Conv2d, nn.Linear)):
                 nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = x.view(x.size(0), -1)
@@ -117,12 +129,13 @@ class MenuPPO(nn.Module):
         return policy_logits, value
 
 
-from errors import PokemonAIError, ModelSaveError
-
-
 class PPONetworkGroup:
-    """Manager for multiple PPO networks for game states."""
-    def __init__(self, n_actions: int, device: 'torch.device', input_channels: int = 4) -> None:
+    """
+    Gestore delle 3 reti PPO specializzate per diversi stati di gioco.
+    Seleziona automaticamente la rete appropriata basandosi sul contesto.
+    """
+
+    def __init__(self, n_actions: int, device: torch.device, input_channels: int = 4) -> None:
         self.device = device
         self.n_actions = n_actions
 
@@ -130,13 +143,21 @@ class PPONetworkGroup:
         self.battle_network = BattlePPO(n_actions, input_channels).to(device)
         self.menu_network = MenuPPO(n_actions, input_channels).to(device)
 
-        import torch.optim as optim
-        self.exploration_optimizer = optim.Adam(self.exploration_network.parameters(), lr=HYPERPARAMETERS['PPO_LR'])
-        self.battle_optimizer = optim.Adam(self.battle_network.parameters(), lr=HYPERPARAMETERS['PPO_LR'])
-        self.menu_optimizer = optim.Adam(self.menu_network.parameters(), lr=HYPERPARAMETERS['PPO_LR'])
+        self.exploration_optimizer = torch.optim.Adam(
+            self.exploration_network.parameters(),
+            lr=HYPERPARAMETERS['PPO_LR']
+        )
+        self.battle_optimizer = torch.optim.Adam(
+            self.battle_network.parameters(),
+            lr=HYPERPARAMETERS['PPO_LR']
+        )
+        self.menu_optimizer = torch.optim.Adam(
+            self.menu_network.parameters(),
+            lr=HYPERPARAMETERS['PPO_LR']
+        )
 
-    def select_network(self, game_state: str):
-        """Select network and optimizer for game state."""
+    def select_network(self, game_state: str) -> Tuple[nn.Module, torch.optim.Optimizer]:
+        """Seleziona rete e optimizer in base allo stato di gioco."""
         if game_state == "battle":
             return self.battle_network, self.battle_optimizer
         elif game_state == "menu":
@@ -144,12 +165,23 @@ class PPONetworkGroup:
         else:
             return self.exploration_network, self.exploration_optimizer
 
-    def choose_action(self, state: torch.Tensor, game_state: str, deterministic: bool = False,
-                      action_mask: 'List[float]' = None):
-        """Choose action with stochastic policy and optional action masking."""
+    def choose_action(
+        self,
+        state: torch.Tensor,
+        game_state: str,
+        deterministic: bool = False,
+        action_mask: List[float] = None
+    ) -> Tuple[int, float, float]:
+        """
+        Sceglie azione usando policy stocastica con mascheramento opzionale.
+
+        Returns:
+            action: Indice dell'azione scelta
+            log_prob: Log-probabilità dell'azione
+            value: Valore stimato dello stato
+        """
         from torch.distributions import Categorical
-        from typing import List
-        
+
         network, _ = self.select_network(game_state)
         network.eval()
 
@@ -157,7 +189,6 @@ class PPONetworkGroup:
             state_batch = state.unsqueeze(0) if state.dim() == 3 else state
             policy_logits, value = network(state_batch)
 
-            # Apply action mask if provided (context-aware filtering)
             if action_mask is not None:
                 from action_filter import ContextAwareActionFilter
                 policy_logits = ContextAwareActionFilter.apply_mask_to_logits(
@@ -175,16 +206,28 @@ class PPONetworkGroup:
 
         return action.item(), log_prob.item(), value.item()
 
-    def train_ppo(self, batch_data: dict, game_state: str, entropy_coeff: float = None) -> dict:
-        """PPO Training with clipped surrogate objective and adaptive entropy."""
-        import torch.optim as optim
-        import torch.nn.functional as F
+    def train_ppo(
+        self,
+        batch_data: Dict,
+        game_state: str,
+        entropy_coeff: float = None
+    ) -> Dict[str, float]:
+        """
+        Training PPO con clipped surrogate objective e entropia adattiva.
+
+        Args:
+            batch_data: Dizionario con states, actions, advantages, returns
+            game_state: Stato di gioco per selezione rete
+            entropy_coeff: Coefficiente entropia (opzionale, usa default se None)
+
+        Returns:
+            Metriche di training (policy_loss, value_loss, entropy)
+        """
         from torch.distributions import Categorical
-        
+
         network, optimizer = self.select_network(game_state)
         network.train()
 
-        # Use entropy coefficient provided or default
         if entropy_coeff is None:
             entropy_coeff = HYPERPARAMETERS['PPO_ENTROPY_COEFF']
 
@@ -194,12 +237,12 @@ class PPONetworkGroup:
         advantages = torch.tensor(batch_data['advantages'], dtype=torch.float32).to(self.device)
         returns = torch.tensor(batch_data['returns'], dtype=torch.float32).to(self.device)
 
-        # Normalize advantages
+        # Normalizzazione advantages per stabilità numerica
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        total_policy_loss = 0
-        total_value_loss = 0
-        total_entropy = 0
+        total_policy_loss = 0.0
+        total_value_loss = 0.0
+        total_entropy = 0.0
         n_updates = 0
 
         dataset_size = len(states)
@@ -224,18 +267,23 @@ class PPONetworkGroup:
                 new_log_probs = dist.log_prob(mb_actions)
                 entropy = dist.entropy().mean()
 
+                # PPO clipped surrogate objective
                 ratio = torch.exp(new_log_probs - mb_old_log_probs)
-
                 surr1 = ratio * mb_advantages
-                surr2 = torch.clamp(ratio, 1.0 - HYPERPARAMETERS['PPO_CLIP_EPSILON'],
-                                   1.0 + HYPERPARAMETERS['PPO_CLIP_EPSILON']) * mb_advantages
+                surr2 = torch.clamp(
+                    ratio,
+                    1.0 - HYPERPARAMETERS['PPO_CLIP_EPSILON'],
+                    1.0 + HYPERPARAMETERS['PPO_CLIP_EPSILON']
+                ) * mb_advantages
                 policy_loss = -torch.min(surr1, surr2).mean()
 
                 value_loss = F.mse_loss(values.squeeze(), mb_returns)
 
-                loss = (policy_loss +
-                       HYPERPARAMETERS['PPO_VALUE_COEFF'] * value_loss -
-                       entropy_coeff * entropy)
+                loss = (
+                    policy_loss +
+                    HYPERPARAMETERS['PPO_VALUE_COEFF'] * value_loss -
+                    entropy_coeff * entropy
+                )
 
                 optimizer.zero_grad()
                 loss.backward()

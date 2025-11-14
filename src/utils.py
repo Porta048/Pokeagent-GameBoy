@@ -13,7 +13,7 @@ from hyperparameters import HYPERPARAMETERS
 
 
 class ImageCache:
-    """LRU cache for preprocessed images."""
+    """Cache LRU per immagini preprocessate."""
     def __init__(self, max_size: int = HYPERPARAMETERS['CACHE_SIZE']):
         self.cache = {}
         self.access_queue = deque()
@@ -93,24 +93,24 @@ class AsyncSaver:
 
 
 class FrameStack:
-    """Manages frame stacking 4x for temporal input."""
+    """Gestisce lo stacking di 4 frame per input temporale."""
     def __init__(self, stack_size=4):
         self.stack_size = stack_size
         self.frames = deque(maxlen=stack_size)
 
     def reset(self, initial_frame):
-        """Initialize with repeated initial frame."""
+        """Inizializza con frame iniziale ripetuto."""
         self.frames.clear()
         for _ in range(self.stack_size):
             self.frames.append(initial_frame)
 
     def add(self, frame):
-        """Add new frame to stack."""
+        """Aggiungi nuovo frame allo stack."""
         self.frames.append(frame)
 
     def get_stack(self):
-        """Get current stack as array."""
-        if TORCH_AVAILABLE and (torch.cuda.is_available() or torch.backends.mps.is_available()):  # Check if PyTorch is available
+        """Ottieni stack corrente come array."""
+        if TORCH_AVAILABLE and (torch.cuda.is_available() or torch.backends.mps.is_available()):  # Verifica se PyTorch è disponibile
             return torch.cat(list(self.frames), dim=0)
         return np.concatenate(list(self.frames), axis=0)
 

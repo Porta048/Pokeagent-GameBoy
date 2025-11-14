@@ -1,28 +1,28 @@
-class PokemonAIError(Exception): 
-    """Base custom exception for Pokemon AI errors."""
+class PokemonAIError(Exception):
+    """Eccezione base personalizzata per errori AI Pokemon."""
     pass
 
 
 class ROMLoadError(PokemonAIError):
-    """Raised when there's an error loading the ROM file."""
+    """Sollevata quando c'è un errore nel caricamento del file ROM."""
     pass
 
 
 class MemoryReadError(PokemonAIError):
-    """Raised when there's an error reading game memory."""
+    """Sollevata quando c'è un errore nella lettura della memoria di gioco."""
     pass
 
 
 class CheckpointLoadError(PokemonAIError):
-    """Raised when there's an error loading a checkpoint."""
+    """Sollevata quando c'è un errore nel caricamento di un checkpoint."""
     pass
 
 
 class GameEnvironmentError(PokemonAIError):
-    """Raised when there's an error with the game environment."""
+    """Sollevata quando c'è un errore con l'ambiente di gioco."""
     pass
 
 
 class ModelSaveError(PokemonAIError):
-    """Raised when there's an error saving the model."""
+    """Sollevata quando c'è un errore nel salvataggio del modello."""
     pass
