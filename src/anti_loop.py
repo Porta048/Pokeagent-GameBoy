@@ -1,6 +1,6 @@
 import time
 from collections import deque
-from hyperparameters import HYPERPARAMETERS
+from .hyperparameters import HYPERPARAMETERS
 
 
 class AdaptiveEntropyScheduler:

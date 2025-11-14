@@ -3,8 +3,8 @@ from functools import lru_cache
 from typing import Tuple
 import numpy as np
 import cv2
-from hyperparameters import HYPERPARAMETERS
-from screen_regions import SCREEN_REGIONS
+from .hyperparameters import HYPERPARAMETERS
+from .screen_regions import SCREEN_REGIONS
 
 
 class GameStateDetector:

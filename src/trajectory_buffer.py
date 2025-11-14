@@ -1,5 +1,5 @@
 from typing import Dict, List, Any
-from hyperparameters import HYPERPARAMETERS
+from .hyperparameters import HYPERPARAMETERS
 
 
 class TrajectoryBuffer:

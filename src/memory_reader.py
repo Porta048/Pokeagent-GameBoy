@@ -39,7 +39,8 @@ class GameMemoryReader:
 
     def get_current_state(self) -> dict:
         try:
-            mem = self.pyboy.get_memory_value
+            # PyBoy modern API: use memory array indexing
+            mem = lambda addr: self.pyboy.memory[addr]
 
             money_bcd = [mem(addr) for addr in range(self.MEMORY_ADDRESSES['MONEY'][0], self.MEMORY_ADDRESSES['MONEY'][1] + 1)]
             money = sum(((b >> 4) * 10 + (b & 0xF)) * (100 ** i) for i, b in enumerate(reversed(money_bcd)))

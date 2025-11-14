@@ -1,6 +1,6 @@
 from typing import List, TYPE_CHECKING
 import torch
-from config import config
+from .config import config
 
 if TYPE_CHECKING:
     from torch import Tensor

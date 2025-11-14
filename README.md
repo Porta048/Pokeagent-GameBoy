@@ -66,23 +66,39 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
 ### Esecuzione dell'Agente
 
+**IMPORTANTE**: Devi fornire il tuo file ROM Pokemon (`.gb` o `.gbc`). Questo progetto NON include file ROM.
+
 ```bash
-python -m src.main
+# Specifica il percorso alla tua ROM
+python -m src --rom-path pokemon_red.gb
+
+# Esempi con percorsi diversi
+python -m src --rom-path "C:/Games/Pokemon Red.gb"
+python -m src --rom-path roms/pokemon_rosso.gb
+python -m src --rom-path "/home/user/roms/pokemon.gb"
+
+# Con opzioni aggiuntive
+python -m src --rom-path pokemon_red.gb --headless --speed 2
+python -m src --rom-path pokemon.gb --log-level DEBUG
 ```
 
-**Opzioni di Configurazione**:
+**Opzioni CLI disponibili**:
+- `--rom-path PATH` - **[RICHIESTO]** Percorso al file ROM Pokemon (`.gb` o `.gbc`)
+- `--headless` - Esegui senza finestra grafica (migliora FPS di ~30%)
+- `--speed N` - Velocità emulazione (0=illimitata, 1=normale, 2=2x, ecc.). Default: 0
+- `--log-level LEVEL` - Livello logging (DEBUG, INFO, WARNING, ERROR). Default: INFO
+
+**Per vedere tutti i comandi disponibili**:
 ```bash
-# Modalità headless (più veloce, senza finestra)
-python -m src.main --headless
-
-# Velocità emulazione personalizzata
-python -m src.main --speed 2  # velocità 2x
-
-# Livello log personalizzato
-python -m src.main --log-level DEBUG
+python -m src --help
 ```
 
-**Nota**: Devi fornire il tuo file ROM Pokemon (`.gb` o `.gbc`). Aggiorna [src/config.py](src/config.py) con il percorso della ROM.
+**Metodo alternativo - Modifica configurazione**:
+Se preferisci non specificare `--rom-path` ogni volta, puoi modificare il default in [src/config.py](src/config.py) linea 21:
+```python
+ROM_PATH: str = "percorso/al/tuo/file.gb"
+```
+Poi esegui semplicemente: `python -m src`
 
 ### Controlli
 

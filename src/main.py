@@ -31,17 +31,17 @@ except ImportError as e:
     DEPS_AVAILABLE = False
     print(f"WARNING: Missing dependencies: {e}")
 
-from config import config
-from memory_reader import GameMemoryReader
-from state_detector import GameStateDetector
-from utils import AsyncSaver, FrameStack, ImageCache, EXPLORATION_CONV_DIMENSIONS, MENU_CONV_DIMENSIONS
-from hyperparameters import HYPERPARAMETERS
-from errors import PokemonAIError, ROMLoadError, MemoryReadError, CheckpointLoadError, GameEnvironmentError
-from anti_loop import AdaptiveEntropyScheduler, AntiLoopMemoryBuffer
-from action_filter import ContextAwareActionFilter
-from trajectory_buffer import TrajectoryBuffer
-from models import PPONetworkGroup
-from screen_regions import SCREEN_REGIONS
+from .config import config
+from .memory_reader import GameMemoryReader
+from .state_detector import GameStateDetector
+from .utils import AsyncSaver, FrameStack, ImageCache, EXPLORATION_CONV_DIMENSIONS, MENU_CONV_DIMENSIONS
+from .hyperparameters import HYPERPARAMETERS
+from .errors import PokemonAIError, ROMLoadError, MemoryReadError, CheckpointLoadError, GameEnvironmentError
+from .anti_loop import AdaptiveEntropyScheduler, AntiLoopMemoryBuffer
+from .action_filter import ContextAwareActionFilter
+from .trajectory_buffer import TrajectoryBuffer
+from .models import PPONetworkGroup
+from .screen_regions import SCREEN_REGIONS
 
 
 # Configurazione logging
@@ -136,7 +136,14 @@ class PokemonAIAgent:
         try:
             final_state = self.memory_reader.get_current_state()
             if final_state:
-                self.stats['final_state'] = final_state
+                # Convert sets to lists for JSON serialization
+                serializable_state = {}
+                for key, value in final_state.items():
+                    if isinstance(value, set):
+                        serializable_state[key] = list(value)
+                    else:
+                        serializable_state[key] = value
+                self.stats['final_state'] = serializable_state
 
             self.stats.update({
                 'episodes': self.episode_count,
@@ -444,12 +451,77 @@ class PokemonAIAgent:
 
 
 def main() -> None:
-    rom_path = config.ROM_PATH
-    if not os.path.exists(rom_path) or not (rom_path.lower().endswith('.gbc') or rom_path.lower().endswith('.gb')) or os.path.getsize(rom_path) == 0:
-        print(f"Error: ROM file not found or invalid at path: {rom_path}")
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Pokemon AI Agent - Reinforcement Learning con PPO",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Esempi d'uso:
+  python -m src --rom-path pokemon_red.gb
+  python -m src --rom-path "C:/Games/Pokemon Red.gb" --headless
+  python -m src --rom-path roms/pokemon.gb --speed 2 --log-level DEBUG
+        """
+    )
+
+    parser.add_argument(
+        '--rom-path',
+        type=str,
+        default=config.ROM_PATH,
+        help=f'Percorso al file ROM Pokemon (.gb o .gbc). Default: {config.ROM_PATH}'
+    )
+    parser.add_argument(
+        '--headless',
+        action='store_true',
+        help='Esegui in modalità headless (senza finestra, più veloce)'
+    )
+    parser.add_argument(
+        '--speed',
+        type=int,
+        default=config.EMULATION_SPEED,
+        help='Velocità emulazione (0=illimitata, 1=normale, 2=2x, ecc.). Default: 0'
+    )
+    parser.add_argument(
+        '--log-level',
+        type=str,
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+        default=config.LOG_LEVEL,
+        help='Livello di logging. Default: INFO'
+    )
+
+    args = parser.parse_args()
+
+    # Aggiorna config con argomenti CLI
+    rom_path = args.rom_path
+    headless = args.headless if args.headless else config.HEADLESS
+
+    if args.speed != config.EMULATION_SPEED:
+        config.EMULATION_SPEED = args.speed
+
+    if args.log_level != config.LOG_LEVEL:
+        config.LOG_LEVEL = args.log_level
+        logging.getLogger().setLevel(getattr(logging, args.log_level))
+
+    # Valida ROM
+    if not os.path.exists(rom_path):
+        print(f"[ERROR] File ROM non trovato: {rom_path}")
+        print(f"\nSpecifica il percorso corretto con --rom-path:")
+        print(f"  python -m src --rom-path percorso/al/tuo/file.gb")
         return
 
-    headless = config.HEADLESS
+    if not (rom_path.lower().endswith('.gbc') or rom_path.lower().endswith('.gb')):
+        print(f"[ERROR] Il file deve essere .gb o .gbc: {rom_path}")
+        return
+
+    if os.path.getsize(rom_path) == 0:
+        print(f"[ERROR] Il file ROM è vuoto: {rom_path}")
+        return
+
+    print(f"[INFO] ROM: {rom_path}")
+    print(f"[INFO] Modalità: {'headless' if headless else 'finestra SDL2'}")
+    print(f"[INFO] Velocità: {'illimitata' if args.speed == 0 else f'{args.speed}x'}")
+    print(f"[INFO] Device: {config.DEVICE}")
+    print()
 
     try:
         agent = PokemonAIAgent(rom_path, headless=headless)

@@ -1,6 +1,39 @@
 {
   "episodes": 0,
-  "total_frames": 9529091,
+  "total_frames": 10729091,
   "best_reward": 16629.807031960227,
-  "avg_reward_last_1000": 0.0
-}
+  "avg_reward_last_1000": 0.0,
+  "final_state": {
+    "player_money": 24,
+    "badges": 0,
+    "pokedex_caught": 1,
+    "pokedex_seen": 4,
+    "team_levels": [
+      6,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "hp_team": [
+      5376,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "hp_max_team": [
+      21,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "in_battle": true,
+    "map_id": 0,
+    "pos_x": 12,
+    "pos_y": 12,
+    "event_flags": 

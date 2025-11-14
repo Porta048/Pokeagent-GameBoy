@@ -4,9 +4,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from hyperparameters import HYPERPARAMETERS
-from utils import EXPLORATION_CONV_DIMENSIONS, MENU_CONV_DIMENSIONS
-from errors import PokemonAIError
+from .hyperparameters import HYPERPARAMETERS
+from .utils import EXPLORATION_CONV_DIMENSIONS, MENU_CONV_DIMENSIONS
+from .errors import PokemonAIError
 
 
 class BaseActorCriticNetwork(nn.Module):
@@ -190,7 +190,7 @@ class PPONetworkGroup:
             policy_logits, value = network(state_batch)
 
             if action_mask is not None:
-                from action_filter import ContextAwareActionFilter
+                from .action_filter import ContextAwareActionFilter
                 policy_logits = ContextAwareActionFilter.apply_mask_to_logits(
                     policy_logits, action_mask
                 )

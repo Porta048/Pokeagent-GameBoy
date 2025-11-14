@@ -8,8 +8,8 @@ try:
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
-    
-from hyperparameters import HYPERPARAMETERS
+
+from .hyperparameters import HYPERPARAMETERS
 
 
 class ImageCache:
