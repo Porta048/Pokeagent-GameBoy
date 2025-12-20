@@ -1,10 +1,39 @@
+"""
+Memory Reader per Pokemon Rosso/Blu.
+Legge la memoria del Game Boy per estrarre informazioni sullo stato di gioco
+e calcolare ricompense basate sulla progressione effettiva.
+
+DESIGN FILOSOFICO:
+- Ricompense alte solo per progressione REALE (medaglie, allenatori, Pokemon)
+- Ricompense basse per grinding e movimento casuale
+- Sistema anti-grinding per prevenire level-up infinito su Pokemon selvatici
+"""
 import time
 from collections import deque
 import numpy as np
 
 
 class GameMemoryReader:
-    """Legge memoria di gioco per reward ed eventi con sistema sofisticato multi-componente."""
+    """
+    Lettore memoria Game Boy per Pokemon Rosso/Blu.
+
+    Funzionalità principali:
+    - Lettura diretta RAM del Game Boy tramite PyBoy
+    - Estrazione stato gioco (posizione, Pokemon, medaglie, progressione)
+    - Calcolo ricompense RL basate su eventi e progressione
+    - Sistema anti-grinding per evitare loop su battaglie selvatiche
+
+    Indirizzi memoria Pokemon Rosso/Blu (offset RAM):
+    - 0xD347-0xD349: Soldi del giocatore (BCD format)
+    - 0xD356: Medaglie (bitfield, ogni bit = 1 medaglia)
+    - 0xD2F7-0xD309: Pokedex catturati (bitarray)
+    - 0xD30A-0xD31C: Pokedex visti (bitarray)
+    - 0xD18C+: Statistiche team Pokemon (livelli, HP, mosse)
+    - 0xD35E: Map ID corrente
+    - 0xD361-0xD362: Posizione (X,Y) del giocatore
+    - 0xD747-0xD886: Event flags (progressione storia)
+    - 0xD5A0-0xD5F7: Trainer flags (allenatori sconfitti)
+    """
     MEMORY_ADDRESSES = {
         'MONEY': (0xD347, 0xD349),
         'BADGES': 0xD356,
@@ -156,13 +185,29 @@ class GameMemoryReader:
         return 2000 if s.get('badges', 0) > self.previous_state.get('badges', 0) else 0
 
     def _calculate_pokemon_rewards(self, s: dict) -> float:
+        """
+        Ricompense Pokemon AUMENTATE per incoraggiare cattura e collezione.
+
+        OBIETTIVO: Catturare Pokemon è un obiettivo CORE del gioco,
+        quindi il reward deve essere abbastanza alto da competere con
+        il semplice progredire nella storia.
+
+        Valori:
+        - Cattura Pokemon: +300 (era +150) - RADDOPPIATO per incentivare cattura
+        - Vedere Pokemon: +30 (era +20) - Aumentato per esplorare nuove zone
+        """
         r = 0
-        if s.get('pokedex_caught', 0) > self.previous_state.get('pokedex_caught', 0):
-            # Catturare Pokemon = obiettivo importante
-            r += 150 * (s.get('pokedex_caught', 0) - self.previous_state.get('pokedex_caught', 0))
-        if s.get('pokedex_seen', 0) > self.previous_state.get('pokedex_seen', 0):
-            # Vedere nuovi Pokemon = esplorazione utile
-            r += 20 * (s.get('pokedex_seen', 0) - self.previous_state.get('pokedex_seen', 0))
+
+        # Cattura nuovo Pokemon: reward MOLTO alto
+        caught_diff = s.get('pokedex_caught', 0) - self.previous_state.get('pokedex_caught', 0)
+        if caught_diff > 0:
+            r += 300 * caught_diff  # RADDOPPIATO da 150 a 300
+
+        # Vedere nuovo Pokemon: reward moderato
+        seen_diff = s.get('pokedex_seen', 0) - self.previous_state.get('pokedex_seen', 0)
+        if seen_diff > 0:
+            r += 30 * seen_diff  # Aumentato da 20 a 30
+
         return r
 
     def _calculate_balanced_level_rewards(self, s: dict) -> float:
@@ -208,18 +253,72 @@ class GameMemoryReader:
         return min(diff / 100, 20) if diff > 0 else -20 if diff < -100 else 0
 
     def _calculate_exploration_rewards(self, s: dict) -> float:
-        # Reward maggiore per cambio mappa (importante per progressione)
-        r = 80 if s.get('map_id', 0) != self.previous_state.get('map_id', 0) else 0
-        # Reward per movimento significativo (incoraggia esplorazione attiva)
-        diff_pos = abs(s.get('pos_x', 0) - self.previous_state.get('pos_x', 0)) + abs(s.get('pos_y', 0) - self.previous_state.get('pos_y', 0))
-        return r + (8 if diff_pos > 5 else 0)
+        """
+        Ricompense esplorazione BILANCIATE.
+
+        CRITICO: Valori ridotti per evitare che l'agente impari solo a camminare
+        senza progressione. L'esplorazione deve essere guidata da obiettivi
+        (nuove mappe, nuovi Pokemon), non da movimento casuale.
+
+        Valori:
+        - Cambio mappa: +50 (era +80) - ancora significativo ma non dominante
+        - Movimento: +0 (era +8) - RIMOSSO per evitare wandering casuale
+
+        L'agente dovrebbe esplorare per trovare allenatori/oggetti/Pokemon,
+        non per accumulare reward di movimento.
+        """
+        # Reward per cambio mappa (solo se nuova mappa mai vista)
+        current_map = s.get('map_id', 0)
+        map_reward = 0
+
+        if current_map != self.previous_state.get('map_id', 0):
+            # Bonus maggiore se mappa mai visitata prima
+            if not hasattr(self, 'maps_visited'):
+                self.maps_visited = set()
+
+            if current_map not in self.maps_visited:
+                map_reward = 150  # Mappa nuova = esplorazione vera (+150)
+                self.maps_visited.add(current_map)
+            else:
+                map_reward = 20  # Mappa già vista = backtracking (+20)
+
+        # NESSUN reward per semplice movimento - solo cambio mappa conta
+        return map_reward
 
     def _calculate_battle_rewards(self, s: dict) -> float:
+        """
+        Ricompense battaglia STRATEGICHE.
+
+        Sistema intelligente che distingue:
+        1. Vittoria battaglia: +80 (era +50) - Reward alto per incentivare combattimenti
+        2. Sconfitta battaglia: -200 (era -100) - Penalità SEVERA per evitare battaglie perse
+        3. Inizio battaglia: +5 (era +2) - Piccolo incentivo per engagement
+
+        IMPORTANTE: La penalità alta per sconfitta insegna all'agente a:
+        - Evitare battaglie quando il team è debole
+        - Curarsi prima di combattere
+        - Usare strategia invece di forza bruta
+        """
         prev_battle = self.previous_state.get('in_battle', False)
         curr_battle = s.get('in_battle', False)
+
+        # Fine battaglia
         if prev_battle and not curr_battle:
-            return 50 if any(hp > 0 for hp in s.get('hp_team', [])) else -100
-        return 2 if not prev_battle and curr_battle else 0
+            # Controlla se team ha HP > 0 (vittoria) o tutto KO (sconfitta)
+            team_alive = any(hp > 0 for hp in s.get('hp_team', []))
+
+            if team_alive:
+                # VITTORIA: Reward significativo
+                return 80
+            else:
+                # SCONFITTA: Penalità severa per insegnare strategia
+                return -200
+
+        # Inizio battaglia: piccolo reward per engagement
+        if not prev_battle and curr_battle:
+            return 5
+
+        return 0
 
     def _calculate_event_flags_rewards(self, s: dict) -> float:
         """

@@ -1,3 +1,32 @@
+"""
+Main Entry Point per Pokemon AI Agent.
+
+ARCHITETTURA GENERALE:
+1. PokemonAIAgent: Classe principale che gestisce tutto
+2. PyBoy: Emulatore Game Boy che esegue la ROM
+3. PPO Networks: 3 reti neurali specializzate (esplorazione, battaglia, menu)
+4. Memory Reader: Legge RAM del Game Boy per stato gioco e ricompense
+5. State Detector: Rileva contesto (battaglia/menu/dialogo/esplorazione)
+6. Trajectory Buffer: Raccoglie esperienze per training PPO
+
+LOOP PRINCIPALE:
+1. Cattura frame corrente dallo schermo
+2. State Detector determina contesto (battle/menu/dialogue/exploring)
+3. Action Filter maschera azioni inutili per il contesto
+4. Rete neurale decide azione da eseguire
+5. Esegue azione sull'emulatore (con frameskip adattivo)
+6. Memory Reader calcola ricompensa dalla RAM
+7. Salva esperienza nel trajectory buffer
+8. Quando buffer pieno → training PPO
+9. Ogni 10k frame → salva checkpoint
+
+OTTIMIZZAZIONI PERFORMANCE:
+- Rendering selettivo (ogni N frame)
+- Frameskip adattivo (6-12 frame) basato su contesto
+- Image caching per frame identici
+- Modalità headless per FPS massimi
+- Async saving per checkpoint non bloccanti
+"""
 import os
 import sys
 import time
@@ -58,7 +87,32 @@ logger = logging.getLogger(__name__)
 
 
 class PokemonAIAgent:
-    """Agente AI per Pokemon con PPO."""
+    """
+    Agente AI principale per Pokemon Rosso/Blu con algoritmo PPO.
+
+    RESPONSABILITÀ:
+    1. Inizializza emulatore Game Boy (PyBoy)
+    2. Gestisce 3 reti neurali PPO specializzate
+    3. Coordina loop training (cattura frame, decide azioni, calcola reward)
+    4. Salva/carica checkpoint per resume training
+    5. Monitora performance e progressione gioco
+
+    COMPONENTI PRINCIPALI:
+    - pyboy: Emulatore Game Boy
+    - network_group: 3 reti PPO (exploration, battle, menu)
+    - trajectory_buffer: Buffer esperienze per training PPO
+    - memory_reader: Lettore RAM Game Boy per stato/reward
+    - state_detector: Rilevatore contesto (CV-based)
+    - anti_loop_buffer: Sistema anti-loop per penalizzare comportamenti ripetitivi
+    - action_filter: Filtro contestuale azioni
+
+    TRAINING:
+    - On-policy PPO con GAE (Generalized Advantage Estimation)
+    - Trajectory length: 512 step
+    - Minibatch size: 32
+    - Epoche per update: 3
+    - Entropy scheduling: 0.1 → 0.01 (decay 200k frame)
+    """
     def __init__(self, rom_path: str, headless: bool = False) -> None:
         if not TORCH_AVAILABLE or not DEPS_AVAILABLE:
             raise PokemonAIError("Missing dependencies. Install: torch, pyboy, keyboard, PIL, cv2")
@@ -271,12 +325,35 @@ class PokemonAIAgent:
             return -1.0
 
     def start_training(self) -> None:
-        """Loop principale di training PPO con rendering fluido."""
+        """
+        Loop principale di training PPO.
+
+        STRUTTURA LOOP:
+        1. INPUT: Cattura frame + stato gioco
+        2. DECISIONE: Rete neurale sceglie azione (con action mask)
+        3. ESECUZIONE: Applica azione su emulatore (con frameskip adattivo)
+        4. REWARD: Calcola ricompensa da RAM Game Boy
+        5. STORAGE: Salva esperienza in trajectory buffer
+        6. TRAINING: Quando buffer pieno, esegui update PPO
+        7. CHECKPOINT: Ogni 10k frame, salva modello
+
+        CONTROLLI KEYBOARD:
+        - ESC: Esci e salva
+        - SPACE: Pausa/Riprendi
+        - +/=: Aumenta velocità emulazione
+        - -/_: Diminuisci velocità emulazione
+
+        OTTIMIZZAZIONI:
+        - Rendering adattivo (ogni N frame) per non rallentare training
+        - Frameskip contestuale (battaglia 12, dialogo 6, esplorazione 10)
+        - Performance monitoring ogni 1000 frame
+        """
         paused = False
         last_save_frame = 0
         perf_start_time = time.time()
         perf_frame_count = 0
 
+        # Inizializza frame stack con primo frame
         initial_frame = self._get_screen_tensor()
         self.frame_stack.reset(initial_frame)
 
@@ -284,6 +361,7 @@ class PokemonAIAgent:
 
         try:
             while True:
+                # === GESTIONE INPUT UTENTE ===
                 if keyboard.is_pressed('escape'):
                     break
                 if keyboard.is_pressed('space'):

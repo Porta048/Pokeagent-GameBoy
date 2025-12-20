@@ -1,4 +1,24 @@
-"""Architetture delle reti neurali PPO per il gioco Pokemon."""
+"""
+Architetture Reti Neurali PPO per Pokemon Rosso/Blu.
+
+DESIGN: Tre reti specializzate per diversi contesti di gioco
+- ExplorationPPO: Esplorazione overworld (leggera, veloce)
+- BattlePPO: Combattimenti (profonda, strategica)
+- MenuPPO: Navigazione menu (minimalista, rapidissima)
+
+ARCHITETTURA ACTOR-CRITIC:
+- Actor (Policy): Decide quale azione fare (output = probabilità per ogni azione)
+- Critic (Value): Stima quanto è "buono" lo stato corrente (output = valore atteso)
+
+PERCHÉ 3 RETI SEPARATE?
+Ogni contesto ha priorità diverse:
+- Esplorazione: Serve velocità, decisioni rapide su movimento
+- Battaglia: Serve profondità, ragionamento strategico su mosse
+- Menu: Serve minimalismo, navigazione efficiente interfaccia
+
+INPUT: Frame stack 4x grayscale (4, 144, 160)
+OUTPUT: Logit azioni (9) + valore stato (1)
+"""
 from typing import List, Dict, Tuple
 import torch
 import torch.nn as nn
@@ -11,8 +31,23 @@ from .errors import PokemonAIError
 
 class BaseActorCriticNetwork(nn.Module):
     """
-    Rete Actor-Critic base con backbone condiviso.
-    Architettura CNN per estrarre features visive + heads separati per policy e value.
+    Rete Actor-Critic BASE per PPO.
+
+    COMPONENTI:
+    1. Backbone CNN: Estrae features visive da frame Game Boy
+       - Conv1: 4→32 canali, kernel 8x8, stride 4 (riduzione aggressive)
+       - Conv2: 32→64 canali, kernel 4x4, stride 2
+       - Conv3: 64→64 canali, kernel 3x3, stride 1 (raffinamento)
+
+    2. Fully Connected: 512 neuroni per rappresentazione ad alto livello
+
+    3. Policy Head: FC 512→9 (logit per ogni azione)
+
+    4. Value Head: FC 512→1 (stima valore stato)
+
+    INIZIALIZZAZIONE: Orthogonal con gain=sqrt(2)
+    - Migliora stabilità training PPO
+    - Previene vanishing/exploding gradients
     """
 
     def __init__(self, n_actions: int, input_channels: int = 4):
