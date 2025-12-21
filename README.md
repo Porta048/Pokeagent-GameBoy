@@ -14,7 +14,13 @@ Agente AI autonomo **ottimizzato** che gioca a Pokemon Rosso/Blu completamente d
 > -  **Penalità sconfitte severe**: -200 (era -100) per insegnare strategia
 > -  **Codice completamente commentato in italiano**: Ogni funzione spiegata in dettaglio
 
-![Pokemon AI Architecture V2.0](docs/architecture.svg)
+<p align="center">
+  <a href="docs/architecture.svg">
+    <img src="docs/architecture.svg" alt="Pokemon AI Architecture V2.0" width="800"/>
+  </a>
+  <br>
+  <em>Diagramma dell'architettura V2.0 - Clicca per ingrandire</em>
+</p>
 
 ## Panoramica
 

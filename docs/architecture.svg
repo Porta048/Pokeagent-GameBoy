@@ -2,39 +2,50 @@
   <!-- Background -->
   <defs>
     <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#667eea;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#764ba2;stop-opacity:1" />
+      <stop offset="0%" style="stop-color:#89f7fe;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#66a6ff;stop-opacity:1" />
     </linearGradient>
     <linearGradient id="brainGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#667eea;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#764ba2;stop-opacity:1" />
+      <stop offset="0%" style="stop-color:#ff8a8a;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#e53e3e;stop-opacity:1" />
     </linearGradient>
     <linearGradient id="gameGradient" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" style="stop-color:#f093fb;stop-opacity:1" />
       <stop offset="100%" style="stop-color:#f5576c;stop-opacity:1" />
     </linearGradient>
     <linearGradient id="detectorGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#4facfe;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#00f2fe;stop-opacity:1" />
+      <stop offset="0%" style="stop-color:#8abaff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0055ff;stop-opacity:1" />
     </linearGradient>
   </defs>
 
   <rect width="1400" height="1600" fill="url(#bgGradient)"/>
 
   <!-- Main Container -->
+  <rect x="45" y="45" width="1320" height="1520" fill="#d6d9e0" rx="20" opacity="0.6"/>
   <rect x="40" y="40" width="1320" height="1520" fill="white" rx="20" opacity="0.98"/>
 
-  <!-- Title -->
-  <text x="700" y="100" font-family="Arial, sans-serif" font-size="48" font-weight="bold" text-anchor="middle" fill="#2d3748">
-    🎮 Pokemon AI Agent V2.0
-  </text>
+  <!-- Icon and Title -->
+  <g>
+    <!-- Simple Pokeball Icon -->
+    <g transform="translate(380, 95)">
+        <circle cx="0" cy="0" r="25" fill="white" stroke="#2d3748" stroke-width="3"/>
+        <path d="M -25,0 A 25,25 0 0,1 25,0" fill="#ff6b6b"/>
+        <line x1="-25" y1="0" x2="25" y2="0" stroke="#2d3748" stroke-width="3"/>
+        <circle cx="0" cy="0" r="8" fill="white" stroke="#2d3748" stroke-width="3"/>
+    </g>
+
+    <text x="700" y="105" font-family="Arial, sans-serif" font-size="48" font-weight="bold" text-anchor="middle" fill="#2d3748">
+      Pokemon AI Agent V2.0
+    </text>
+  </g>
 
   <text x="700" y="140" font-family="Arial, sans-serif" font-size="20" text-anchor="middle" fill="#718096">
     Architettura PPO Multi-Rete Ottimizzata
   </text>
 
   <!-- Flow Diagram -->
-  <rect x="80" y="180" width="1240" height="200" fill="#f7fafc" stroke="#667eea" stroke-width="3" stroke-dasharray="10,5" rx="15"/>
+  <rect x="80" y="180" width="1240" height="200" fill="#f7fafc" stroke="#e53e3e" stroke-width="3" stroke-dasharray="10,5" rx="15"/>
 
   <text x="700" y="215" font-family="Arial, sans-serif" font-size="24" font-weight="bold" text-anchor="middle" fill="#2d3748">
     🔄 Loop Training Principale
@@ -49,7 +60,7 @@
   <text x="170" y="325" font-family="Arial, sans-serif" font-size="12" text-anchor="middle" fill="#718096">Frame</text>
 
   <!-- Arrow -->
-  <text x="255" y="300" font-family="Arial, sans-serif" font-size="28" fill="#667eea">→</text>
+  <text x="255" y="300" font-family="Arial, sans-serif" font-size="28" fill="#e53e3e">→</text>
 
   <!-- Step 2 -->
   <rect x="280" y="240" width="140" height="110" fill="white" stroke="#e2e8f0" stroke-width="2" rx="10"/>
@@ -58,7 +69,7 @@
   <text x="350" y="305" font-family="Arial, sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="#2d3748">Detector</text>
   <text x="350" y="325" font-family="Arial, sans-serif" font-size="12" text-anchor="middle" fill="#718096">Stato</text>
 
-  <text x="435" y="300" font-family="Arial, sans-serif" font-size="28" fill="#667eea">→</text>
+  <text x="435" y="300" font-family="Arial, sans-serif" font-size="28" fill="#e53e3e">→</text>
 
   <!-- Step 3 -->
   <rect x="460" y="240" width="140" height="110" fill="white" stroke="#e2e8f0" stroke-width="2" rx="10"/>
@@ -67,7 +78,7 @@
   <text x="530" y="305" font-family="Arial, sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="#2d3748">Filter</text>
   <text x="530" y="325" font-family="Arial, sans-serif" font-size="12" text-anchor="middle" fill="#718096">0.3-1.0</text>
 
-  <text x="615" y="300" font-family="Arial, sans-serif" font-size="28" fill="#667eea">→</text>
+  <text x="615" y="300" font-family="Arial, sans-serif" font-size="28" fill="#e53e3e">→</text>
 
   <!-- Step 4 -->
   <rect x="640" y="240" width="140" height="110" fill="white" stroke="#e2e8f0" stroke-width="2" rx="10"/>
@@ -76,7 +87,7 @@
   <text x="710" y="305" font-family="Arial, sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="#2d3748">PPO</text>
   <text x="710" y="325" font-family="Arial, sans-serif" font-size="12" text-anchor="middle" fill="#718096">Azione</text>
 
-  <text x="795" y="300" font-family="Arial, sans-serif" font-size="28" fill="#667eea">→</text>
+  <text x="795" y="300" font-family="Arial, sans-serif" font-size="28" fill="#e53e3e">→</text>
 
   <!-- Step 5 -->
   <rect x="820" y="240" width="140" height="110" fill="white" stroke="#e2e8f0" stroke-width="2" rx="10"/>
@@ -85,7 +96,7 @@
   <text x="890" y="305" font-family="Arial, sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="#2d3748">Esegue</text>
   <text x="890" y="325" font-family="Arial, sans-serif" font-size="12" text-anchor="middle" fill="#718096">6-12 skip</text>
 
-  <text x="975" y="300" font-family="Arial, sans-serif" font-size="28" fill="#667eea">→</text>
+  <text x="975" y="300" font-family="Arial, sans-serif" font-size="28" fill="#e53e3e">→</text>
 
   <!-- Step 6 -->
   <rect x="1000" y="240" width="140" height="110" fill="white" stroke="#e2e8f0" stroke-width="2" rx="10"/>
@@ -94,7 +105,7 @@
   <text x="1070" y="305" font-family="Arial, sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="#2d3748">Reward</text>
   <text x="1070" y="325" font-family="Arial, sans-serif" font-size="12" text-anchor="middle" fill="#718096">RAM</text>
 
-  <text x="1155" y="300" font-family="Arial, sans-serif" font-size="28" fill="#667eea">→</text>
+  <text x="1155" y="300" font-family="Arial, sans-serif" font-size="28" fill="#e53e3e">→</text>
 
   <!-- Step 7 -->
   <rect x="1180" y="240" width="120" height="110" fill="white" stroke="#e2e8f0" stroke-width="2" rx="10"/>
@@ -106,7 +117,7 @@
   <!-- Components Grid -->
   <!-- Row 1 -->
   <!-- PPO Networks -->
-  <rect x="80" y="420" width="380" height="280" fill="#f7fafc" stroke="#e2e8f0" stroke-width="2" rx="15"/>
+  <rect x="80" y="420" width="380" height="280" fill="#f8f8f8" stroke="#080808" stroke-width="3" rx="15"/>
   <rect x="95" y="435" width="50" height="50" fill="url(#brainGradient)" rx="10"/>
   <text x="120" y="468" font-family="Arial, sans-serif" font-size="28" text-anchor="middle" fill="white">🧠</text>
   <text x="160" y="465" font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="#2d3748">PPO Networks</text>
@@ -120,7 +131,7 @@
   <text x="110" y="668" font-family="Arial, sans-serif" font-size="12" fill="#718096">massima efficienza nel dominio</text>
 
   <!-- PyBoy -->
-  <rect x="490" y="420" width="380" height="280" fill="#f7fafc" stroke="#e2e8f0" stroke-width="2" rx="15"/>
+  <rect x="490" y="420" width="380" height="280" fill="#f8f8f8" stroke="#080808" stroke-width="3" rx="15"/>
   <rect x="505" y="435" width="50" height="50" fill="url(#gameGradient)" rx="10"/>
   <text x="530" y="468" font-family="Arial, sans-serif" font-size="28" text-anchor="middle" fill="white">🎮</text>
   <text x="570" y="465" font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="#2d3748">PyBoy Emulator</text>
@@ -134,7 +145,7 @@
   <text x="520" y="668" font-family="Arial, sans-serif" font-size="12" fill="#718096">Rendering selettivo non bloccante</text>
 
   <!-- State Detector -->
-  <rect x="900" y="420" width="380" height="280" fill="#f7fafc" stroke="#e2e8f0" stroke-width="2" rx="15"/>
+  <rect x="900" y="420" width="380" height="280" fill="#f8f8f8" stroke="#080808" stroke-width="3" rx="15"/>
   <rect x="915" y="435" width="50" height="50" fill="url(#detectorGradient)" rx="10"/>
   <text x="940" y="468" font-family="Arial, sans-serif" font-size="28" text-anchor="middle" fill="white">👁️</text>
   <text x="980" y="465" font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="#2d3748">State Detector</text>
@@ -194,7 +205,7 @@
     📊 Performance V2.0 vs V1.0
   </text>
 
-  <rect x="200" y="1130" width="1000" height="280" fill="#f7fafc" stroke="#667eea" stroke-width="3" rx="15"/>
+  <rect x="200" y="1130" width="1000" height="280" fill="#f7fafc" stroke="#e53e3e" stroke-width="3" rx="15"/>
 
   <!-- Table Header -->
   <rect x="220" y="1150" width="250" height="40" fill="url(#brainGradient)" rx="8"/>

@@ -60,6 +60,14 @@ except ImportError as e:
     DEPS_AVAILABLE = False
     print(f"WARNING: Missing dependencies: {e}")
 
+# Patch per consentire l'esecuzione diretta di main.py risolvendo gli import relativi.
+# Questo è utile per il debug o per l'esecuzione in ambienti che non usano `python -m src`.
+if __package__ is None or __package__ == '':
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    __package__ = "src"
+
 from .config import config
 from .memory_reader import GameMemoryReader
 from .state_detector import GameStateDetector
