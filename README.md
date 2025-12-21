@@ -197,7 +197,15 @@ Esempio output:
 
 ##  Documentazione Visuale
 
-Guarda il **diagramma dell'architettura V2.0** in alto per una visione completa del sistema!
+Guarda il **diagramma dell'architettura V2.0** qui sotto per una visione completa del sistema!
+
+<p align="center">
+  <a href="docs/architecture.svg">
+    <img src="docs/architecture.svg" alt="Pokemon AI Architecture V2.0" width="800"/>
+  </a>
+  <br>
+  <em>Diagramma dell'architettura V2.0 - Clicca per ingrandire</em>
+</p>
 
 Il diagramma SVG mostra:
 -  **Loop training completo** (7 step dall'input al training)
