@@ -15,11 +15,11 @@ Agente AI autonomo **ottimizzato** che gioca a Pokemon Rosso/Blu completamente d
 > -  **Codice completamente commentato in italiano**: Ogni funzione spiegata in dettaglio
 
 <p align="center">
-  <a href="docs/architecture.svg">
-    <img src="docs/architecture.svg" alt="Pokemon AI Architecture V2.0" width="800"/>
+  <a href="Screenshot%202025-09-13%20221934.png">
+    <img src="Screenshot%202025-09-13%20221934.png" alt="Screenshot del progetto" width="800"/>
   </a>
   <br>
-  <em>Diagramma dell'architettura V2.0 - Clicca per ingrandire</em>
+  <em>Screenshot del progetto</em>
 </p>
 
 ## Panoramica
