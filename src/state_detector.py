@@ -13,17 +13,21 @@ TECNICHE:
 - Analisi varianza pixel in regioni specifiche (barra HP)
 - Cache LRU per performance (evita ricalcoli su frame identici)
 - Soglie adattive basate su hyperparameters
+- OCR opzionale per estrazione testo (dialoghi, menu, nomi Pokemon)
 
 NOTA PERFORMANCE: Cache LRU aumentata a 200 (era 50) per gestire
 meglio sequenze lunghe di frame simili durante esplorazione.
 """
 import hashlib
+import logging
 from functools import lru_cache
-from typing import Tuple
+from typing import Dict, Optional, Tuple
 import numpy as np
 import cv2
 from .hyperparameters import HYPERPARAMETERS
 from .screen_regions import SCREEN_REGIONS
+
+logger = logging.getLogger(__name__)
 
 
 class GameStateDetector:
@@ -190,7 +194,125 @@ class GameStateDetector:
             return is_dialogue
 
         except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
             logger.warning(f"Errore rilevamento dialogo: {str(e)}")
             return False
+
+    # ==================== OCR METHODS (OPTIONAL) ====================
+
+    def get_ocr_reader(self):
+        """
+        Lazy loading del lettore OCR.
+
+        Returns:
+            GameBoyOCR instance o None se non disponibile
+        """
+        if not hasattr(self, '_ocr_reader'):
+            try:
+                from .ocr_reader import get_ocr
+                self._ocr_reader = get_ocr()
+                if not self._ocr_reader.is_available:
+                    logger.info("OCR non disponibile (EasyOCR non installato)")
+                    self._ocr_reader = None
+            except ImportError:
+                logger.info("Modulo OCR non trovato, funzionalità OCR disabilitata")
+                self._ocr_reader = None
+
+        return self._ocr_reader
+
+    def read_screen_text(self, scr: np.ndarray) -> Optional[Dict]:
+        """
+        Estrae tutto il testo visibile dallo schermo usando OCR.
+
+        NOTA: Metodo opzionale, non blocca se OCR non disponibile.
+
+        Args:
+            scr: Schermo Game Boy (144x160 grayscale)
+
+        Returns:
+            Dict con testo estratto o None se OCR non disponibile:
+            - dialogue: Testo del dialogo
+            - menu: Lista opzioni menu
+            - battle: Info battaglia (nomi, mosse)
+            - raw_texts: Lista grezza [(testo, confidenza), ...]
+        """
+        ocr = self.get_ocr_reader()
+        if ocr is None:
+            return None
+
+        if scr is None or scr.size == 0 or scr.shape != (144, 160):
+            return None
+
+        try:
+            return ocr.read_all(scr)
+        except Exception as e:
+            logger.warning(f"Errore OCR: {e}")
+            return None
+
+    def read_dialogue_text(self, scr: np.ndarray) -> str:
+        """
+        Legge il testo del dialogo corrente.
+
+        Args:
+            scr: Schermo Game Boy (144x160 grayscale)
+
+        Returns:
+            Testo del dialogo o stringa vuota
+        """
+        ocr = self.get_ocr_reader()
+        if ocr is None:
+            return ''
+
+        if scr is None or scr.size == 0 or scr.shape != (144, 160):
+            return ''
+
+        try:
+            return ocr.read_dialogue(scr)
+        except Exception as e:
+            logger.warning(f"Errore lettura dialogo: {e}")
+            return ''
+
+    def read_menu_options(self, scr: np.ndarray) -> list:
+        """
+        Legge le opzioni del menu corrente.
+
+        Args:
+            scr: Schermo Game Boy (144x160 grayscale)
+
+        Returns:
+            Lista opzioni menu o lista vuota
+        """
+        ocr = self.get_ocr_reader()
+        if ocr is None:
+            return []
+
+        if scr is None or scr.size == 0 or scr.shape != (144, 160):
+            return []
+
+        try:
+            return ocr.read_menu_options(scr)
+        except Exception as e:
+            logger.warning(f"Errore lettura menu: {e}")
+            return []
+
+    def read_battle_info(self, scr: np.ndarray) -> Optional[Dict]:
+        """
+        Estrae informazioni dalla schermata di battaglia.
+
+        Args:
+            scr: Schermo Game Boy (144x160 grayscale)
+
+        Returns:
+            Dict con enemy_name, player_name, moves o None
+        """
+        ocr = self.get_ocr_reader()
+        if ocr is None:
+            return None
+
+        if scr is None or scr.size == 0 or scr.shape != (144, 160):
+            return None
+
+        try:
+            return ocr.read_battle_info(scr)
+        except Exception as e:
+            logger.warning(f"Errore lettura info battaglia: {e}")
+            return None

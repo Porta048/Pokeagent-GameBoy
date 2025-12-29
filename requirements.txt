@@ -19,6 +19,11 @@ opencv-python>=4.8.0
 # Input handling
 keyboard>=0.13.5
 
+# Optional: OCR per lettura testo schermo (dialoghi, menu, nomi Pokemon)
+# Installa con: pip install easyocr
+# NOTA: Prima esecuzione scarica modello (~100MB)
+# easyocr>=1.7.0
+
 # Optional: For parallel training (future feature)
 # multiprocessing is built-in
 # ray>=2.9.0  # Uncomment for distributed training
