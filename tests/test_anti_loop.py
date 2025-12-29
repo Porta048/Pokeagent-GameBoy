@@ -21,7 +21,7 @@ class TestAdaptiveEntropyScheduler:
         # After decay frames, should be at end value
         entropy = scheduler.get_entropy(scheduler.decay_frames)
 
-        assert entropy == scheduler.end_entropy
+        assert entropy == pytest.approx(scheduler.end_entropy)
 
     def test_entropy_decreases_over_time(self):
         """Test that entropy decreases monotonically."""
@@ -40,7 +40,8 @@ class TestAdaptiveEntropyScheduler:
         entropy_at_decay = scheduler.get_entropy(scheduler.decay_frames)
         entropy_after = scheduler.get_entropy(scheduler.decay_frames * 2)
 
-        assert entropy_at_decay == entropy_after == scheduler.end_entropy
+        assert entropy_at_decay == pytest.approx(scheduler.end_entropy)
+        assert entropy_after == pytest.approx(scheduler.end_entropy)
 
 
 class TestAntiLoopMemoryBuffer:

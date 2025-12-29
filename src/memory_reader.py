@@ -254,18 +254,16 @@ class GameMemoryReader:
 
     def _calculate_exploration_rewards(self, s: dict) -> float:
         """
-        Ricompense esplorazione BILANCIATE.
+        Ricompense esplorazione OTTIMIZZATE per progressione fluida.
 
-        CRITICO: Valori ridotti per evitare che l'agente impari solo a camminare
-        senza progressione. L'esplorazione deve essere guidata da obiettivi
-        (nuove mappe, nuovi Pokemon), non da movimento casuale.
+        OBIETTIVO: Guidare l'agente verso nuove aree mantenendo focus su obiettivi.
 
-        Valori:
-        - Cambio mappa: +50 (era +80) - ancora significativo ma non dominante
-        - Movimento: +0 (era +8) - RIMOSSO per evitare wandering casuale
+        Sistema a 3 livelli:
+        1. Nuova mappa (mai visitata): +250 - Esplorazione vera
+        2. Mappa già vista: +30 - Backtracking necessario
+        3. Progressione storia: Bonus distanza da spawn
 
-        L'agente dovrebbe esplorare per trovare allenatori/oggetti/Pokemon,
-        non per accumulare reward di movimento.
+        OTTIMIZZATO: Aumentati reward per dare segnali più forti
         """
         # Reward per cambio mappa (solo se nuova mappa mai vista)
         current_map = s.get('map_id', 0)
@@ -277,27 +275,31 @@ class GameMemoryReader:
                 self.maps_visited = set()
 
             if current_map not in self.maps_visited:
-                map_reward = 150  # Mappa nuova = esplorazione vera (+150)
+                # AUMENTATO: 150 → 250 per incentivare forte esplorazione
+                map_reward = 250  # Mappa nuova = milestone importante
                 self.maps_visited.add(current_map)
             else:
-                map_reward = 20  # Mappa già vista = backtracking (+20)
+                # AUMENTATO: 20 → 30 per non penalizzare backtracking necessario
+                map_reward = 30  # Mappa già vista = movimento valido
 
         # NESSUN reward per semplice movimento - solo cambio mappa conta
         return map_reward
 
     def _calculate_battle_rewards(self, s: dict) -> float:
         """
-        Ricompense battaglia STRATEGICHE.
+        Ricompense battaglia OTTIMIZZATE per progressione.
 
         Sistema intelligente che distingue:
-        1. Vittoria battaglia: +80 (era +50) - Reward alto per incentivare combattimenti
-        2. Sconfitta battaglia: -200 (era -100) - Penalità SEVERA per evitare battaglie perse
-        3. Inizio battaglia: +5 (era +2) - Piccolo incentivo per engagement
+        1. Vittoria battaglia: +120 (era +80) - AUMENTATO per incentivare combattimenti
+        2. Sconfitta battaglia: -200 - Penalità SEVERA per evitare battaglie perse
+        3. Inizio battaglia: +10 (era +5) - AUMENTATO per engagement
 
         IMPORTANTE: La penalità alta per sconfitta insegna all'agente a:
         - Evitare battaglie quando il team è debole
         - Curarsi prima di combattere
         - Usare strategia invece di forza bruta
+
+        OTTIMIZZATO: Reward vittoria aumentato per competere con esplorazione passiva
         """
         prev_battle = self.previous_state.get('in_battle', False)
         curr_battle = s.get('in_battle', False)
@@ -308,15 +310,16 @@ class GameMemoryReader:
             team_alive = any(hp > 0 for hp in s.get('hp_team', []))
 
             if team_alive:
-                # VITTORIA: Reward significativo
-                return 80
+                # VITTORIA: AUMENTATO 80 → 120
+                # Le battaglie sono essenziali per progressione
+                return 120
             else:
                 # SCONFITTA: Penalità severa per insegnare strategia
                 return -200
 
-        # Inizio battaglia: piccolo reward per engagement
+        # Inizio battaglia: AUMENTATO 5 → 10 per maggiore engagement
         if not prev_battle and curr_battle:
-            return 5
+            return 10
 
         return 0
 
@@ -324,6 +327,9 @@ class GameMemoryReader:
         """
         Reward flag eventi: premia eventi completati (battaglie allenatori, progressione quest, medaglie palestra).
         Traccia flag eventi e allenatori per incentivare progressione storia.
+
+        OTTIMIZZATO: Reward eventi aumentati per fornire feedback più frequente
+        e guidare meglio l'agente verso progressione storia.
         """
         reward = 0.0
 
@@ -332,8 +338,9 @@ class GameMemoryReader:
         new_events = event_flags_curr - self.previous_event_flags
 
         if new_events:
-            # Eventi storia = progressione importante
-            reward += 5.0 * len(new_events)
+            # AUMENTATO: Eventi storia = progressione importante (5 → 50)
+            # Questi sono milestone critiche che sbloccano nuove aree
+            reward += 50.0 * len(new_events)
             self.previous_event_flags = event_flags_curr.copy()
 
         # Flag allenatori (battaglie allenatori vinte)
@@ -341,8 +348,9 @@ class GameMemoryReader:
         new_trainers = trainer_flags_curr - self.previous_trainer_flags
 
         if new_trainers:
-            # Battaglie allenatori sono preziose (non grinding, progressione obbligatoria)
-            reward += 100.0 * len(new_trainers)
+            # AUMENTATO: Battaglie allenatori (100 → 200)
+            # Sono progressione obbligatoria e più rare del grinding
+            reward += 200.0 * len(new_trainers)
             self.previous_trainer_flags = trainer_flags_curr.copy()
 
         return reward
@@ -351,6 +359,9 @@ class GameMemoryReader:
         """
         Reward navigazione: premia esplorazione di nuove coordinate.
         Incoraggia esplorazione sistematica senza grinding nella stessa area.
+
+        OTTIMIZZATO: Reward navigazione aumentato per feedback continuo.
+        Questo è il segnale più frequente che l'agente riceve.
         """
         pos_x = s.get('pos_x', 0)
         pos_y = s.get('pos_y', 0)
@@ -362,7 +373,9 @@ class GameMemoryReader:
         # Reward solo se nuova coordinata
         if coord_key not in self.visited_coordinates:
             self.visited_coordinates.add(coord_key)
-            return 2.0  # Aumentato per incoraggiare esplorazione sistematica
+            # AUMENTATO: 2.0 → 5.0 per dare feedback più forte
+            # Questo guida l'esplorazione tra obiettivi principali
+            return 5.0
 
         return 0.0
 

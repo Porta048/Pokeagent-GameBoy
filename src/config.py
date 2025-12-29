@@ -18,7 +18,7 @@ class Config:
     #   ROM_PATH: str = "roms/Pokemon Red.gb"               # Sottocartella roms/
     #   ROM_PATH: str = "C:/Games/Pokemon/pokemon_red.gb"   # Percorso assoluto Windows
     #   ROM_PATH: str = "/home/user/roms/pokemon_red.gb"    # Percorso assoluto Linux/Mac
-    ROM_PATH: str = "pokemon_red.gb"
+    ROM_PATH: str = r"C:\Users\chatg\Documents\GitHub\Pokemon Red.gb"
 
     # Impostazioni emulatore
     HEADLESS: bool = False
