@@ -1,68 +1,28 @@
-"""
-Architetture Reti Neurali PPO per Pokemon Rosso/Blu.
-
-DESIGN: Tre reti specializzate per diversi contesti di gioco
-- ExplorationPPO: Esplorazione overworld (leggera, veloce)
-- BattlePPO: Combattimenti (profonda, strategica)
-- MenuPPO: Navigazione menu (minimalista, rapidissima)
-
-ARCHITETTURA: DeepSeek-VL2 (arXiv:2412.10302)
-Componenti chiave:
-- PixelShuffleAdaptor: Compressione token visivi 2×2
-- Multi-head Latent Attention (MLA): KV cache compresso
-- Migliore comprensione relazioni spaziali
-- 94% meno parametri rispetto a CNN classiche
-
-INPUT: Frame stack 4x grayscale (4, 144, 160)
-OUTPUT: Logit azioni (9) + valore stato (1)
-"""
 from typing import Dict, Tuple
 import logging
 import torch
 import torch.nn as nn
-
 from .hyperparameters import HYPERPARAMETERS
 from .vision_encoder import (
     ExplorationPPO,
     BattlePPO,
     MenuPPO,
 )
-
 logger = logging.getLogger(__name__)
-
-# Re-export per retrocompatibilità
 __all__ = ['ExplorationPPO', 'BattlePPO', 'MenuPPO', 'PPONetworkGroup']
-
-
 class PPONetworkGroup:
-    """
-    Gestore delle 3 reti PPO specializzate per diversi stati di gioco.
-    Seleziona automaticamente la rete appropriata basandosi sul contesto.
-
-    Architettura: DeepSeek-VL2 (arXiv:2412.10302)
-    - PixelShuffleAdaptor: Compressione 2×2 token visivi
-    - Multi-head Latent Attention: KV cache compresso
-
-    Args:
-        n_actions: Numero azioni (9 per Game Boy)
-        device: torch.device (cpu/cuda/mps)
-        input_channels: Canali input (4 per frame stack)
-    """
-
     def __init__(
         self,
         n_actions: int,
         device: torch.device,
         input_channels: int = 4,
-        **kwargs  # Ignora parametri legacy come 'architecture'
+        **kwargs  
     ) -> None:
         self.device = device
         self.n_actions = n_actions
-
         self.exploration_network = ExplorationPPO(n_actions, input_channels).to(device)
         self.battle_network = BattlePPO(n_actions, input_channels).to(device)
         self.menu_network = MenuPPO(n_actions, input_channels).to(device)
-
         self.exploration_optimizer = torch.optim.Adam(
             self.exploration_network.parameters(),
             lr=HYPERPARAMETERS['PPO_LR']
@@ -75,34 +35,22 @@ class PPONetworkGroup:
             self.menu_network.parameters(),
             lr=HYPERPARAMETERS['PPO_LR']
         )
-
         self._log_architecture_info()
-
     def _log_architecture_info(self) -> None:
-        """Log informazioni sull'architettura."""
         total_params = sum(
             sum(p.numel() for p in net.parameters())
             for net in [self.exploration_network, self.battle_network, self.menu_network]
         )
-
         logger.info("[ARCH] Architettura: DEEPSEEK-VL2")
         logger.info(f"[ARCH] Parametri totali: {total_params:,}")
         logger.info("[ARCH] Componenti:")
         logger.info("  - PixelShuffleAdaptor: Compressione 2×2 token visivi")
         logger.info("  - Multi-head Latent Attention: KV cache compresso")
-
     def get_architecture_info(self) -> Dict:
-        """
-        Ritorna informazioni dettagliate sull'architettura.
-
-        Returns:
-            Dict con architettura, parametri per rete, totale
-        """
         info = {
             'architecture': 'deepseek_vl2',
             'networks': {}
         }
-
         for name, net in [
             ('exploration', self.exploration_network),
             ('battle', self.battle_network),
@@ -113,22 +61,17 @@ class PPONetworkGroup:
                 'parameters': params,
                 'class': net.__class__.__name__
             }
-
         info['total_parameters'] = sum(
             n['parameters'] for n in info['networks'].values()
         )
-
         return info
-
     def select_network(self, game_state: str) -> Tuple[nn.Module, torch.optim.Optimizer]:
-        """Seleziona rete e optimizer in base allo stato di gioco."""
         if game_state == "battle":
             return self.battle_network, self.battle_optimizer
         elif game_state == "menu":
             return self.menu_network, self.menu_optimizer
         else:
             return self.exploration_network, self.exploration_optimizer
-
     def choose_action(
         self,
         state: torch.Tensor,
@@ -136,103 +79,62 @@ class PPONetworkGroup:
         deterministic: bool = False,
         action_mask: list = None
     ) -> Tuple[int, float, float]:
-        """
-        Sceglie azione usando policy stocastica con mascheramento opzionale.
-
-        Returns:
-            action: Indice dell'azione scelta
-            log_prob: Log-probabilità dell'azione
-            value: Valore stimato dello stato
-        """
         from torch.distributions import Categorical
-
         network, _ = self.select_network(game_state)
         network.eval()
-
         with torch.no_grad():
             state_batch = state.unsqueeze(0) if state.dim() == 3 else state
             policy_logits, value = network(state_batch)
-
             if action_mask is not None:
                 from .action_filter import ContextAwareActionFilter
                 policy_logits = ContextAwareActionFilter.apply_mask_to_logits(
                     policy_logits, action_mask
                 )
-
             dist = Categorical(logits=policy_logits)
-
             if deterministic:
                 action = policy_logits.argmax(dim=-1)
             else:
                 action = dist.sample()
-
             log_prob = dist.log_prob(action)
-
         return action.item(), log_prob.item(), value.item()
-
     def train_ppo(
         self,
         batch_data: Dict,
         game_state: str,
         entropy_coeff: float = None
     ) -> Dict[str, float]:
-        """
-        Training PPO con clipped surrogate objective e entropia adattiva.
-
-        Args:
-            batch_data: Dizionario con states, actions, advantages, returns
-            game_state: Stato di gioco per selezione rete
-            entropy_coeff: Coefficiente entropia (opzionale, usa default se None)
-
-        Returns:
-            Metriche di training (policy_loss, value_loss, entropy)
-        """
         from torch.distributions import Categorical
         import torch.nn.functional as F
-
         network, optimizer = self.select_network(game_state)
         network.train()
-
         if entropy_coeff is None:
             entropy_coeff = HYPERPARAMETERS['PPO_ENTROPY_COEFF']
-
         states = torch.stack(batch_data['states']).to(self.device)
         actions = torch.tensor(batch_data['actions'], dtype=torch.long).to(self.device)
         old_log_probs = torch.tensor(batch_data['old_log_probs'], dtype=torch.float32).to(self.device)
         advantages = torch.tensor(batch_data['advantages'], dtype=torch.float32).to(self.device)
         returns = torch.tensor(batch_data['returns'], dtype=torch.float32).to(self.device)
-
-        # Normalizzazione advantages per stabilità numerica
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
         total_policy_loss = 0.0
         total_value_loss = 0.0
         total_entropy = 0.0
         n_updates = 0
-
         dataset_size = len(states)
         minibatch_size = HYPERPARAMETERS['PPO_MINIBATCH_SIZE']
-
         for epoch in range(HYPERPARAMETERS['PPO_EPOCHS']):
             indices = torch.randperm(dataset_size)
-
             for start in range(0, dataset_size, minibatch_size):
                 end = min(start + minibatch_size, dataset_size)
                 mb_indices = indices[start:end]
-
                 mb_states = states[mb_indices]
                 mb_actions = actions[mb_indices]
                 mb_old_log_probs = old_log_probs[mb_indices]
                 mb_advantages = advantages[mb_indices]
                 mb_returns = returns[mb_indices]
-
                 policy_logits, values = network(mb_states)
                 dist = Categorical(logits=policy_logits)
-
                 new_log_probs = dist.log_prob(mb_actions)
                 entropy = dist.entropy().mean()
-
-                # PPO clipped surrogate objective
                 ratio = torch.exp(new_log_probs - mb_old_log_probs)
                 surr1 = ratio * mb_advantages
                 surr2 = torch.clamp(
@@ -241,25 +143,20 @@ class PPONetworkGroup:
                     1.0 + HYPERPARAMETERS['PPO_CLIP_EPSILON']
                 ) * mb_advantages
                 policy_loss = -torch.min(surr1, surr2).mean()
-
                 value_loss = F.mse_loss(values.squeeze(), mb_returns)
-
                 loss = (
                     policy_loss +
                     HYPERPARAMETERS['PPO_VALUE_COEFF'] * value_loss -
                     entropy_coeff * entropy
                 )
-
                 optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(network.parameters(), HYPERPARAMETERS['PPO_MAX_GRAD_NORM'])
                 optimizer.step()
-
                 total_policy_loss += policy_loss.item()
                 total_value_loss += value_loss.item()
                 total_entropy += entropy.item()
                 n_updates += 1
-
         return {
             'policy_loss': total_policy_loss / n_updates,
             'value_loss': total_value_loss / n_updates,

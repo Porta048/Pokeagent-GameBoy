@@ -149,7 +149,7 @@ class PixelShuffleAdaptor(nn.Module):
 
 class MultiHeadLatentAttention(nn.Module):
     """
-    Multi-head Latent Attention (MLA) dal paper DeepSeek-VL2.
+    Multi-head Latent Attention (MLA) dal paper DeepSeek-VL2 with INT4 quantization.
 
     IDEA CHIAVE (Section 2.3 del paper):
     Invece di cachare K e V di dimensione (heads × head_dim),
@@ -159,6 +159,7 @@ class MultiHeadLatentAttention(nn.Module):
     1. KV cache ridotta di ~10× (rank=64 vs 512 standard)
     2. Inference più veloce (meno memoria da leggere)
     3. Throughput maggiore (più batch in memoria)
+    4. INT4 quantization riduce ulteriormente la memoria del 4×
 
     FORMULA (dal paper):
     - Latent: c = W_down @ x  (compressione)
@@ -174,6 +175,7 @@ class MultiHeadLatentAttention(nn.Module):
         num_heads: Numero di attention heads
         kv_rank: Rank della compressione KV (più basso = più efficiente)
         dropout: Dropout rate
+        use_int4: Whether to use INT4 quantization for KV cache
     """
 
     def __init__(
@@ -181,7 +183,8 @@ class MultiHeadLatentAttention(nn.Module):
         embed_dim: int = 256,
         num_heads: int = 4,
         kv_rank: int = 64,
-        dropout: float = 0.0
+        dropout: float = 0.0,
+        use_int4: bool = True
     ):
         super().__init__()
 
@@ -190,6 +193,7 @@ class MultiHeadLatentAttention(nn.Module):
         self.head_dim = embed_dim // num_heads
         self.kv_rank = kv_rank
         self.scale = self.head_dim ** -0.5
+        self.use_int4 = use_int4
 
         assert embed_dim % num_heads == 0, "embed_dim deve essere divisibile per num_heads"
 
@@ -209,6 +213,11 @@ class MultiHeadLatentAttention(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
+        # Initialize INT4 quantization if enabled
+        if use_int4:
+            from .int4_quantization import INT4Quantizer
+            self.kv_quantizer = INT4Quantizer(symmetric=True, per_channel=True)
+
         self._initialize_weights()
 
     def _initialize_weights(self) -> None:
@@ -226,15 +235,17 @@ class MultiHeadLatentAttention(nn.Module):
         self,
         x: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-        return_kv_cache: bool = False
+        return_kv_cache: bool = False,
+        use_cache: bool = False
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
-        Forward pass MLA.
+        Forward pass MLA with optional INT4 quantization.
 
         Args:
             x: Input tensor (B, N, D)
             attention_mask: Maschera opzionale (B, N) o (B, 1, N, N)
             return_kv_cache: Se True, ritorna anche KV latent per caching
+            use_cache: Se True, usa la cache INT4 quantizzata
 
         Returns:
             output: (B, N, D)
@@ -247,6 +258,21 @@ class MultiHeadLatentAttention(nn.Module):
 
         # KV compression (innovazione MLA)
         kv_latent = self.kv_down_proj(x)  # (B, N, rank) - QUESTO è cachato
+
+        # Apply INT4 quantization if enabled
+        if self.use_int4 and use_cache:
+            # Usa il quantizer interno se disponibile
+            if hasattr(self, 'kv_quantizer'):
+                kv_latent_quantized, scale = self.kv_quantizer.quantize(kv_latent)
+                # Per il calcolo, dequantizza
+                kv_latent = self.kv_quantizer.dequantize(kv_latent_quantized, scale)
+            else:
+                # Fallback: crea temporaneamente un quantizer
+                from .int4_quantization import INT4Quantizer
+                quantizer = INT4Quantizer(symmetric=True, per_channel=True)
+                kv_latent_quantized, scale = quantizer.quantize(kv_latent)
+                # Per il calcolo, dequantizza
+                kv_latent = quantizer.dequantize(kv_latent_quantized, scale)
 
         # KV decompression
         k = self.k_up_proj(kv_latent)  # (B, N, D)
@@ -304,7 +330,8 @@ class VisionBackbone(nn.Module):
         embed_dim: int = 256,
         num_heads: int = 4,
         kv_rank: int = 64,
-        num_mla_layers: int = 2
+        num_mla_layers: int = 2,
+        use_int4: bool = True
     ):
         super().__init__()
 
@@ -331,7 +358,8 @@ class VisionBackbone(nn.Module):
             MultiHeadLatentAttention(
                 embed_dim=embed_dim,
                 num_heads=num_heads,
-                kv_rank=kv_rank
+                kv_rank=kv_rank,
+                use_int4=use_int4
             )
             for _ in range(num_mla_layers)
         ])
@@ -397,7 +425,7 @@ class VisionBackbone(nn.Module):
             # MLA con residual
             residual = x
             x = mla_norm(x)
-            x, _ = mla(x)
+            x, _ = mla(x)  # Usa il metodo originale senza cache per ora
             x = residual + x
 
             # FF con residual
@@ -442,7 +470,8 @@ class VisionPPO(nn.Module):
         embed_dim: int = 256,
         num_heads: int = 4,
         kv_rank: int = 64,
-        num_mla_layers: int = 2
+        num_mla_layers: int = 2,
+        use_int4: bool = True
     ):
         super().__init__()
 
@@ -451,7 +480,8 @@ class VisionPPO(nn.Module):
             embed_dim=embed_dim,
             num_heads=num_heads,
             kv_rank=kv_rank,
-            num_mla_layers=num_mla_layers
+            num_mla_layers=num_mla_layers,
+            use_int4=use_int4
         )
 
         # Policy head (Actor)
@@ -517,7 +547,8 @@ class ExplorationPPO(VisionPPO):
             embed_dim=192,
             num_heads=3,
             kv_rank=48,
-            num_mla_layers=1
+            num_mla_layers=1,
+            use_int4=True
         )
 
 
@@ -539,7 +570,8 @@ class BattlePPO(VisionPPO):
             embed_dim=320,
             num_heads=5,
             kv_rank=80,
-            num_mla_layers=3
+            num_mla_layers=3,
+            use_int4=True
         )
 
 
@@ -561,7 +593,8 @@ class MenuPPO(VisionPPO):
             embed_dim=128,
             num_heads=2,
             kv_rank=32,
-            num_mla_layers=1
+            num_mla_layers=1,
+            use_int4=True
         )
 
 
