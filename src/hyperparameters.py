@@ -1,4 +1,12 @@
-"""Iperparametri per l'agente AI Pokemon."""
+"""
+Iperparametri per l'agente AI Pokemon.
+
+Include configurazioni per:
+- PPO (Proximal Policy Optimization)
+- Vision Encoder (PixelShuffle + Multi-head Latent Attention)
+- Sistema anti-loop
+- Ottimizzazioni emulatore
+"""
 from .config import config
 
 # Iperparametri per l'agente AI
@@ -26,6 +34,36 @@ HYPERPARAMETERS = {
     'PPO_LR': 3e-4,
     'PPO_MAX_GRAD_NORM': 0.5,
     'FRAME_STACK': config.FRAME_STACK_SIZE,
+
+    # ============== VISION ENCODER HYPERPARAMETERS ==============
+    # Architettura ispirata a DeepSeek-VL2 (arXiv:2412.10302)
+    # Adattati per input Game Boy 144x160
+
+    # PixelShuffleAdaptor: Compressione token visivi
+    # Shuffle factor 2 = 2×2 pixel → 1 token (riduzione 4×)
+    'DEEPSEEK_VL2_SHUFFLE_FACTOR': 2,
+
+    # Multi-head Latent Attention (MLA)
+    # kv_rank: Dimensione vettori latenti KV (più basso = più efficiente)
+    # Paper usa rank=512 per modello 27B, noi usiamo 48-80 per efficienza
+    'DEEPSEEK_VL2_EXPLORATION_KV_RANK': 48,   # Leggero per esplorazione
+    'DEEPSEEK_VL2_BATTLE_KV_RANK': 80,        # Più profondo per battaglie
+    'DEEPSEEK_VL2_MENU_KV_RANK': 32,          # Minimale per menu
+
+    # Embedding dimensions per rete
+    'DEEPSEEK_VL2_EXPLORATION_EMBED_DIM': 192,
+    'DEEPSEEK_VL2_BATTLE_EMBED_DIM': 320,
+    'DEEPSEEK_VL2_MENU_EMBED_DIM': 128,
+
+    # Attention heads
+    'DEEPSEEK_VL2_EXPLORATION_NUM_HEADS': 3,
+    'DEEPSEEK_VL2_BATTLE_NUM_HEADS': 5,
+    'DEEPSEEK_VL2_MENU_NUM_HEADS': 2,
+
+    # MLA layers (transformer depth)
+    'DEEPSEEK_VL2_EXPLORATION_MLA_LAYERS': 1,
+    'DEEPSEEK_VL2_BATTLE_MLA_LAYERS': 3,
+    'DEEPSEEK_VL2_MENU_MLA_LAYERS': 1,
     # Sistema anti-confusione
     'ANTI_LOOP_ENABLED': config.ANTI_LOOP_ENABLED,
     'ANTI_LOOP_BUFFER_SIZE': 100,        # Traccia ultimi 100 stati

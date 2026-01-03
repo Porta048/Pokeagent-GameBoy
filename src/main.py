@@ -158,7 +158,11 @@ class PokemonAIAgent:
         self.game_state_path = os.path.join(self.save_dir, config.GAME_STATE_FILENAME)
 
         input_channels = config.FRAME_STACK_SIZE
-        self.network_group = PPONetworkGroup(len(self.actions), self.device, input_channels)
+        self.network_group = PPONetworkGroup(
+            len(self.actions),
+            self.device,
+            input_channels
+        )
 
         self.trajectory_buffer = TrajectoryBuffer()
         self.frame_stack = FrameStack(config.FRAME_STACK_SIZE)
@@ -607,6 +611,7 @@ Esempi d'uso:
     print(f"[INFO] Modalità: {'headless' if headless else 'finestra SDL2'}")
     print(f"[INFO] Velocità: {'illimitata' if args.speed == 0 else f'{args.speed}x'}")
     print(f"[INFO] Device: {config.DEVICE}")
+    print(f"[INFO] Architettura: DeepSeek-VL2 (arXiv:2412.10302)")
     print()
 
     try:
