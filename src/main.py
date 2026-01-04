@@ -87,7 +87,8 @@ class PokemonAIAgent:
         self.frame_stack = FrameStack(config.FRAME_STACK_SIZE)
         self.image_cache = ImageCache()
         self.memory_reader = GameMemoryReader(self.pyboy)
-        self.moe_router = GameStateMoERouter(vision_features_dim=1024, state_embedding_dim=256)
+        # ExplorationPPO backbone outputs 192-dim features (vision_encoder.py:547)
+        self.moe_router = GameStateMoERouter(vision_features_dim=192, state_embedding_dim=256)
         self.moe_router.to(self.device)
         self.async_saver = AsyncSaver()
         self.entropy_scheduler = AdaptiveEntropyScheduler()
@@ -242,11 +243,15 @@ class PokemonAIAgent:
                 loop_penalty = self.anti_loop_buffer.calculate_loop_penalty()
                 if loop_penalty < 0:
                     reward += loop_penalty
-                    if self.frame_count % 5000 == 0:  
+                    if self.frame_count % 5000 == 0:
                         print(f"[ANTI-LOOP] Loop detected! Penalty: {loop_penalty:.2f}")
                 exploration_bonus = self.anti_loop_buffer.get_exploration_bonus()
                 if exploration_bonus > 0:
                     reward += exploration_bonus
+                # Apply menu spam penalty (VAPO-inspired value-based reasoning)
+                menu_penalty = self.anti_loop_buffer.get_menu_spam_penalty(self.frame_count)
+                if menu_penalty < 0:
+                    reward += menu_penalty
             self.reward_history.append(reward)
             self.total_reward += reward
             return reward
@@ -288,28 +293,18 @@ class PokemonAIAgent:
                 self.frame_stack.add(single_frame)
                 stacked_state = self.frame_stack.get_stack()
 
-                # Get game memory features for MoE Router
+                # Get game memory features for reliable state detection
                 memory_state = self.memory_reader.get_current_state()
                 memory_features = self._extract_memory_features(memory_state)
 
-                # Use MoE Router for state detection if available
-                try:
-                    # Get vision features from the encoder
-                    # For now, we'll use a simplified approach to get features from the backbone
-                    with torch.no_grad():
-                        backbone_features = self.network_group.exploration_network.backbone(stacked_state)
-                        # Flatten the features to create a vision feature vector
-                        vision_features_flat = backbone_features.view(backbone_features.size(0), -1)
-
-                    # Pass to MoE Router
-                    moe_output = self.moe_router(vision_features_flat, memory_features)
-                    predicted_state_idx = moe_output['predicted_state'].item()
-                    self.current_game_state = self.moe_router.get_state_name(predicted_state_idx)
-
-                    # Use state-specific features for action selection
-                    state_features = moe_output['state_features'].get(self.current_game_state, vision_features_flat)
-                except Exception as e:
-                    logger.warning(f"MoE Router error: {e}, defaulting to exploring")
+                # Use memory-based state detection (more reliable than untrained MoE Router)
+                # This can be replaced with MoE Router once it's properly trained
+                if memory_state.get('in_battle', False):
+                    self.current_game_state = "battle"
+                else:
+                    # Simple heuristic: check if position is changing
+                    # Dialogue state = same position for multiple frames
+                    # Exploring state = position changing
                     self.current_game_state = "exploring"
 
                 action_mask = self.action_filter.get_action_mask(self.current_game_state)
@@ -339,6 +334,11 @@ class PokemonAIAgent:
                         mem_state.get('map_id', 0),
                         action
                     )
+                    # Track menu opening (UI-TARS inspired reasoning)
+                    start_index = self.actions.index('start')
+                    self.anti_loop_buffer.track_menu_action(
+                        action, start_index, self.frame_count
+                    )
                 reward = self._calculate_reward()
                 perf_frame_count += 1
                 if perf_frame_count % config.PERFORMANCE_LOG_INTERVAL == 0:
@@ -367,7 +367,20 @@ class PokemonAIAgent:
                     _, _, next_value = self.network_group.choose_action(
                         next_stacked_state, self.current_game_state, deterministic=True
                     )
-                    advantages, returns = self.trajectory_buffer.calculate_gae_advantages(next_value)
+
+                    # GRPO: Calculate advantages with group-relative normalization
+                    advantages, returns, group_stats = self.trajectory_buffer.calculate_grpo_advantages(
+                        next_value,
+                        group_by=HYPERPARAMETERS.get('GRPO_GROUP_BY', 'game_state')
+                    )
+
+                    # Log group statistics (DeepSeek-R1 GRPO monitoring)
+                    if HYPERPARAMETERS.get('GRPO_LOG_GROUP_STATS', True) and self.frame_count % config.PERFORMANCE_LOG_INTERVAL == 0:
+                        for state, stats in group_stats.items():
+                            if stats.get('normalized', True):
+                                logger.info(f"[GRPO] {state}: mean={stats['mean']:.3f}, "
+                                          f"std={stats['std']:.3f}, n={stats['count']}")
+
                     current_entropy_coeff = self.entropy_scheduler.get_entropy(self.frame_count)
                     game_states_in_buffer = set(self.trajectory_buffer.game_states)
                     for gs in game_states_in_buffer:
@@ -382,13 +395,15 @@ class PokemonAIAgent:
                             'returns': [returns[i] for i in indices],
                             'game_states': [gs] * len(indices)
                         }
-                        metrics = self.network_group.train_ppo(batch_data, gs, entropy_coeff=current_entropy_coeff)
+
+                        # GRPO training (advantages pre-normalized by group)
+                        metrics = self.network_group.train_grpo(batch_data, gs, entropy_coeff=current_entropy_coeff)
                         self.loss_history.append(metrics['policy_loss'])
-                        if self.frame_count % 100 == 0:
-                            print(f"[TRAIN] Frame {self.frame_count} [{gs}] - "
-                                  f"Policy Loss: {metrics['policy_loss']:.4f}, "
-                                  f"Value Loss: {metrics['value_loss']:.4f}, "
-                                  f"Entropy: {metrics['entropy']:.4f}")
+                        # Always log training (not dependent on frame count)
+                        print(f"[GRPO] Frame {self.frame_count} [{gs}] - "
+                              f"Policy Loss: {metrics['policy_loss']:.4f}, "
+                              f"Value Loss: {metrics['value_loss']:.4f}, "
+                              f"Entropy: {metrics['entropy']:.4f}")
 
                     # Train the MoE Router if we have world model data
                     # This would be done in a separate training loop in a full implementation

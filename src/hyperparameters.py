@@ -47,5 +47,10 @@ HYPERPARAMETERS = {
     'RENDER_ENABLED': config.RENDER_ENABLED,
     'RENDER_EVERY_N_FRAMES': config.RENDER_EVERY_N_FRAMES,
     'PERFORMANCE_LOG_INTERVAL': config.PERFORMANCE_LOG_INTERVAL,
-    'EMULATION_SPEED': config.EMULATION_SPEED
+    'EMULATION_SPEED': config.EMULATION_SPEED,
+    # GRPO (Group Relative Policy Optimization) - DeepSeek-R1 January 2025
+    'GRPO_ENABLED': True,                    # Enable group-relative optimization
+    'GRPO_GROUP_BY': 'game_state',          # 'game_state' | 'none' (fallback to PPO)
+    'GRPO_MIN_GROUP_SIZE': 2,               # Minimum samples for group normalization
+    'GRPO_LOG_GROUP_STATS': True            # Log per-group statistics
 }

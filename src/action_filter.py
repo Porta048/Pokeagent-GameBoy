@@ -36,10 +36,12 @@ class ContextAwareActionFilter:
             mask[config.ACTIONS.index('select')] = 0.3 
         elif game_state == "exploring":
             """
-            ESPLORAZIONE: Priorità frecce (movimento), A (interazione), Start (menu)
+            ESPLORAZIONE: Priorità frecce (movimento), A (interazione)
+            START (menu) ridotto per evitare aperture ripetitive
             NOOP ridotto per incoraggiare movimento attivo
             """
-            mask[config.ACTIONS.index(None)] = 0.5    
+            mask[config.ACTIONS.index(None)] = 0.5
+            mask[config.ACTIONS.index('start')] = 0.4  # Reduced from 1.0 to discourage menu spam
             mask[config.ACTIONS.index('select')] = 0.5 
         return mask
     @staticmethod

@@ -39,7 +39,7 @@ class Config:
     HP_THRESHOLD: int = 500
     MENU_THRESHOLD: float = 0.15
     DIALOGUE_THRESHOLD: int = 30
-    ANTI_LOOP_ENABLED: bool = False
+    ANTI_LOOP_ENABLED: bool = True  # Enable anti-loop with menu spam detection
     LOG_FILE: str = "pokemon_ai.log"
     LOG_LEVEL: str = "INFO"
     def __post_init__(self) -> None:

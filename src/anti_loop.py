@@ -14,8 +14,11 @@ class AntiLoopMemoryBuffer:
     def __init__(self):
         self.buffer_size = HYPERPARAMETERS['ANTI_LOOP_BUFFER_SIZE']
         self.state_buffer = deque(maxlen=self.buffer_size)
-        self.action_history = deque(maxlen=20)  
-        self.position_history = deque(maxlen=50)  
+        self.action_history = deque(maxlen=20)
+        self.position_history = deque(maxlen=50)
+        # Track menu opening behavior (inspired by ByteDance UI-TARS reasoning)
+        self.menu_open_history = deque(maxlen=30)
+        self.last_menu_open_time = 0  
     def add_state(self, pos_x: int, pos_y: int, id_map: int, action: int):
         state_key = (id_map, pos_x, pos_y)
         self.state_buffer.append(state_key)
@@ -58,8 +61,46 @@ class AntiLoopMemoryBuffer:
             return 0.0
         recent_states = list(self.state_buffer)[-20:]
         unique_ratio = len(set(recent_states)) / len(recent_states)
-        if unique_ratio > 0.6:  
-            return 1.5  
-        elif unique_ratio > 0.4:  
-            return 0.8  
+        if unique_ratio > 0.6:
+            return 1.5
+        elif unique_ratio > 0.4:
+            return 0.8
+        return 0.0
+
+    def track_menu_action(self, action_index: int, start_button_index: int, frame_count: int):
+        """
+        Track menu opening actions (inspired by ByteDance VAPO value-based reasoning).
+        Penalizes non-productive menu usage.
+        """
+        if action_index == start_button_index:
+            self.menu_open_history.append(frame_count)
+            self.last_menu_open_time = frame_count
+
+    def detect_menu_spam(self, current_frame: int) -> bool:
+        """
+        Detect if agent is opening menu too frequently without productive actions.
+        Uses temporal reasoning similar to UI-TARS.
+        """
+        if len(self.menu_open_history) < 3:
+            return False
+
+        # Check if menu was opened 3+ times in last 100 frames
+        recent_opens = [f for f in self.menu_open_history if current_frame - f < 100]
+        if len(recent_opens) >= 3:
+            return True
+
+        # Check if menu opened very recently (less than 20 frames ago)
+        if current_frame - self.last_menu_open_time < 20:
+            return True
+
+        return False
+
+    def get_menu_spam_penalty(self, current_frame: int) -> float:
+        """
+        Calculate penalty for menu spam behavior.
+        Implements value-based action filtering from VAPO framework.
+        """
+        if self.detect_menu_spam(current_frame):
+            # Stronger penalty for frequent menu opening
+            return -1.5
         return 0.0
