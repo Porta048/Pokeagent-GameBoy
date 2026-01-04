@@ -43,6 +43,7 @@ from .anti_loop import AdaptiveEntropyScheduler, AntiLoopMemoryBuffer
 from .action_filter import ContextAwareActionFilter
 from .trajectory_buffer import TrajectoryBuffer
 from .models import PPONetworkGroup
+from .simple_world_model import SimpleWorldModel, compute_world_model_loss
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -83,6 +84,23 @@ class PokemonAIAgent:
             self.device,
             input_channels
         )
+
+        # World Model for imagination training
+        self.world_model = SimpleWorldModel(
+            input_channels=config.FRAME_STACK_SIZE,
+            latent_dim=HYPERPARAMETERS['WORLD_MODEL_LATENT_DIM'],
+            action_dim=len(self.actions),
+            hidden_dim=256
+        ).to(self.device)
+
+        self.world_model_optimizer = torch.optim.Adam(
+            self.world_model.parameters(),
+            lr=HYPERPARAMETERS['WORLD_MODEL_LR']
+        )
+
+        self.world_model_enabled = False  # Will enable after 10k frames
+        self.imagination_horizon = HYPERPARAMETERS['WORLD_MODEL_IMAGINATION_HORIZON']
+
         self.trajectory_buffer = TrajectoryBuffer()
         self.frame_stack = FrameStack(config.FRAME_STACK_SIZE)
         self.image_cache = ImageCache()
@@ -186,6 +204,16 @@ class PokemonAIAgent:
                 if 'moe_router_state' in checkpoint:
                     self.moe_router.load_state_dict(checkpoint['moe_router_state'])
 
+                # Load World Model if available in checkpoint
+                if 'world_model_state' in checkpoint:
+                    try:
+                        self.world_model.load_state_dict(checkpoint['world_model_state'])
+                        self.world_model_optimizer.load_state_dict(checkpoint['world_model_optimizer_state'])
+                        logger.info("[LOAD] World model loaded from checkpoint")
+                    except RuntimeError as wm_error:
+                        logger.warning(f"[LOAD] Could not load world model (architecture changed): {wm_error}")
+                        logger.info("[LOAD] World model will be trained from scratch")
+
                 self.episode_count = checkpoint.get('episode', 0)
                 self.frame_count = checkpoint.get('frame', 0)
                 print(f"[LOAD] Checkpoint loaded: episode {self.episode_count}, frame {self.frame_count}")
@@ -207,6 +235,8 @@ class PokemonAIAgent:
             'battle_state': self.network_group.battle_network.state_dict(),
             'menu_state': self.network_group.menu_network.state_dict(),
             'moe_router_state': self.moe_router.state_dict(),
+            'world_model_state': self.world_model.state_dict(),
+            'world_model_optimizer_state': self.world_model_optimizer.state_dict(),
             'episode': self.episode_count,
             'frame': self.frame_count
         }
@@ -258,6 +288,77 @@ class PokemonAIAgent:
         except Exception as e:
             logger.error(f"Error calculating reward: {str(e)}")
             return -1.0
+
+    def _train_world_model(self, trajectory_buffer) -> Dict[str, float]:
+        """Train world model to predict next state, reward, done."""
+        self.world_model.train()
+
+        total_latent_loss = 0.0
+        total_reward_loss = 0.0
+        total_done_loss = 0.0
+        n_updates = 0
+
+        # Sample sequences from trajectory buffer
+        max_start_idx = len(trajectory_buffer.states) - self.imagination_horizon
+        if max_start_idx < 1:
+            return {
+                'latent_loss': 0.0,
+                'reward_loss': 0.0,
+                'done_loss': 0.0
+            }
+
+        for i in range(max_start_idx):
+            # Get sequence: states, actions, rewards, dones
+            states = []
+            next_states = []
+            actions = []
+            rewards = []
+            dones = []
+
+            for j in range(i, min(i + self.imagination_horizon, len(trajectory_buffer.states) - 1)):
+                states.append(trajectory_buffer.states[j])
+                next_states.append(trajectory_buffer.states[j + 1])
+                actions.append(trajectory_buffer.actions[j])
+                rewards.append(trajectory_buffer.rewards[j])
+                dones.append(trajectory_buffer.dones[j])
+
+            if len(states) == 0:
+                continue
+
+            # Convert to tensors
+            states_t = torch.stack(states).to(self.device)
+            next_states_t = torch.stack(next_states).to(self.device)
+            actions_t = torch.tensor(actions, dtype=torch.long).to(self.device)
+            rewards_t = torch.tensor(rewards, dtype=torch.float32).to(self.device)
+            dones_t = torch.tensor(dones, dtype=torch.float32).to(self.device)
+
+            # Compute world model loss
+            losses = compute_world_model_loss(
+                self.world_model,
+                states_t,
+                actions_t,
+                next_states_t,
+                rewards_t,
+                dones_t
+            )
+
+            # Backprop
+            self.world_model_optimizer.zero_grad()
+            losses['total_loss'].backward()
+            nn.utils.clip_grad_norm_(self.world_model.parameters(), 1.0)
+            self.world_model_optimizer.step()
+
+            total_latent_loss += losses['latent_loss'].item()
+            total_reward_loss += losses['reward_loss'].item()
+            total_done_loss += losses['done_loss'].item()
+            n_updates += 1
+
+        return {
+            'latent_loss': total_latent_loss / max(n_updates, 1),
+            'reward_loss': total_reward_loss / max(n_updates, 1),
+            'done_loss': total_done_loss / max(n_updates, 1)
+        }
+
     def start_training(self) -> None:
         paused = False
         last_save_frame = 0
@@ -404,6 +505,23 @@ class PokemonAIAgent:
                               f"Policy Loss: {metrics['policy_loss']:.4f}, "
                               f"Value Loss: {metrics['value_loss']:.4f}, "
                               f"Entropy: {metrics['entropy']:.4f}")
+
+                    # World Model Training
+                    if self.frame_count > HYPERPARAMETERS['WORLD_MODEL_START_FRAME']:
+                        if not self.world_model_enabled:
+                            logger.info("[WORLD_MODEL] Starting pre-training on replay buffer")
+                            self.world_model_enabled = True
+
+                        wm_metrics = self._train_world_model(self.trajectory_buffer)
+
+                        # Log world model performance
+                        if HYPERPARAMETERS.get('GRPO_LOG_GROUP_STATS', True):
+                            logger.info(
+                                f"[WORLD_MODEL] Frame {self.frame_count} - "
+                                f"Latent: {wm_metrics['latent_loss']:.4f}, "
+                                f"Reward: {wm_metrics['reward_loss']:.4f}, "
+                                f"Done: {wm_metrics['done_loss']:.4f}"
+                            )
 
                     # Train the MoE Router if we have world model data
                     # This would be done in a separate training loop in a full implementation

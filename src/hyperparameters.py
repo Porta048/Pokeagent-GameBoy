@@ -52,5 +52,11 @@ HYPERPARAMETERS = {
     'GRPO_ENABLED': True,                    # Enable group-relative optimization
     'GRPO_GROUP_BY': 'game_state',          # 'game_state' | 'none' (fallback to PPO)
     'GRPO_MIN_GROUP_SIZE': 2,               # Minimum samples for group normalization
-    'GRPO_LOG_GROUP_STATS': True            # Log per-group statistics
+    'GRPO_LOG_GROUP_STATS': True,           # Log per-group statistics
+    # World Model (Dreamer-style imagination training)
+    'WORLD_MODEL_ENABLED': True,
+    'WORLD_MODEL_START_FRAME': 10_000,      # Start training after 10k frames
+    'WORLD_MODEL_LR': 1e-4,                 # Learning rate
+    'WORLD_MODEL_IMAGINATION_HORIZON': 10,  # Steps to imagine ahead
+    'WORLD_MODEL_LATENT_DIM': 192,          # Match exploration network
 }

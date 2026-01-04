@@ -1,21 +1,21 @@
-#  Pokemon AI Agent - Versione 3.0
+#  Pokemon AI Agent - Versione 4.0
 
 [![CI](https://github.com/yourusername/Pokeagent-GameBoy/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/Pokeagent-GameBoy/actions/workflows/ci.yml)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![PPO Algorithm](https://img.shields.io/badge/RL-PPO-green.svg)](https://arxiv.org/abs/1707.06347)
-[![Vision Encoder](https://img.shields.io/badge/Arch-Vision%20Encoder-purple.svg)](https://arxiv.org/abs/2412.10302)
+[![GRPO](https://img.shields.io/badge/RL-GRPO-green.svg)](https://arxiv.org/abs/2501.12948)
+[![World Model](https://img.shields.io/badge/Arch-World%20Model-orange.svg)](https://arxiv.org/abs/2509.24527)
 
-Agente AI autonomo che gioca a Pokemon Rosso/Blu completamente da solo usando **Proximal Policy Optimization (PPO)** con architettura **Vision Encoder** ispirata a DeepSeek-VL2.
+Agente AI autonomo che gioca a Pokemon Rosso/Blu usando **GRPO** (Group Relative Policy Optimization) con **World Model** per imagination training.
 
-> ** VERSIONE 3.0 - NUOVA ARCHITETTURA VISION ENCODER**:
+> **VERSIONE 4.0 - GRPO + WORLD MODEL** (Gennaio 2026):
 >
-> -  **Vision Encoder**: Architettura ispirata a DeepSeek-VL2 (arXiv:2412.10302)
-> -  **PixelShuffleAdaptor**: Compressione 2×2 token visivi (4× meno token)
-> -  **Multi-head Latent Attention**: KV cache compresso per efficienza
-> -  **94% meno parametri**: Da 20M a 3M parametri totali
-> -  **Migliore generalizzazione**: Meno overfitting su dataset RL
-> -  **Training più stabile**: BatchNorm + GELU + LayerNorm
+> - **GRPO**: DeepSeek-R1 group-relative advantage normalization (Gennaio 2025)
+> - **World Model**: Dreamer-style imagination training (preparato per Phase 2)
+> - **DeepSeek-VL2 Vision**: PixelShuffleAdaptor + Multi-head Latent Attention
+> - **3.2M parametri**: Exploration (454K) + Battle (2.5M) + Menu (257K)
+> - **Anti-loop system**: Menu spam detection + temporal reasoning
+> - **Memory-based state detection**: Reliable battle/exploring detection
 
 <p align="center">
   <a href="Screenshot%202025-09-13%20221934.png">
