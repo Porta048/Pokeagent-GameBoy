@@ -35,7 +35,6 @@ if __package__ is None or __package__ == '':
     __package__ = "src"
 from .config import config
 from .memory_reader import GameMemoryReader
-from .state_detector import GameStateDetector
 from .moe_router import GameStateMoERouter
 from .utils import AsyncSaver, FrameStack, ImageCache, EXPLORATION_CONV_DIMENSIONS, MENU_CONV_DIMENSIONS
 from .hyperparameters import HYPERPARAMETERS
@@ -44,7 +43,6 @@ from .anti_loop import AdaptiveEntropyScheduler, AntiLoopMemoryBuffer
 from .action_filter import ContextAwareActionFilter
 from .trajectory_buffer import TrajectoryBuffer
 from .models import PPONetworkGroup
-from .screen_regions import SCREEN_REGIONS
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -89,7 +87,6 @@ class PokemonAIAgent:
         self.frame_stack = FrameStack(config.FRAME_STACK_SIZE)
         self.image_cache = ImageCache()
         self.memory_reader = GameMemoryReader(self.pyboy)
-        self.state_detector = GameStateDetector()  # Keep for fallback
         self.moe_router = GameStateMoERouter(vision_features_dim=1024, state_embedding_dim=256)
         self.moe_router.to(self.device)
         self.async_saver = AsyncSaver()
@@ -105,6 +102,12 @@ class PokemonAIAgent:
         self.reward_history = deque(maxlen=1000)
         self.loss_history = deque(maxlen=100)
         self._load_checkpoint()
+
+    def _detect_game_state_moe(self, vision_features: torch.Tensor, memory_features: torch.Tensor) -> str:
+        with torch.no_grad():
+            moe_output = self.moe_router(vision_features, memory_features)
+            predicted_state_idx = moe_output["predicted_state"].item()
+            return self.moe_router.get_state_name(predicted_state_idx)
 
     def _extract_memory_features(self, memory_state: Dict) -> torch.Tensor:
         """
@@ -229,32 +232,6 @@ class PokemonAIAgent:
             logger.error(f"Error getting screen tensor: {str(e)}")
             blank_frame = torch.zeros((1, 144, 160), dtype=torch.float32, device=self.device)
             return blank_frame
-    def _detect_game_state(self, screen_array):
-        # Try to use the MoE Router for state detection
-        try:
-            # Get vision features from the vision encoder
-            # We'll need to pass the vision features to the MoE Router
-            # For now, we'll use the CV state detector as fallback
-            if self.state_detector.detect_battle(screen_array):
-                self.current_game_state = "battle"
-            elif self.state_detector.detect_dialogue(screen_array):
-                self.current_game_state = "dialogue"
-            elif self.state_detector.detect_menu(screen_array):
-                self.current_game_state = "menu"
-            else:
-                self.current_game_state = "exploring"
-        except Exception as e:
-            # Fallback to CV state detector if MoE Router fails
-            if self.state_detector.detect_battle(screen_array):
-                self.current_game_state = "battle"
-            elif self.state_detector.detect_dialogue(screen_array):
-                self.current_game_state = "dialogue"
-            elif self.state_detector.detect_menu(screen_array):
-                self.current_game_state = "menu"
-            else:
-                self.current_game_state = "exploring"
-
-        return self.current_game_state
     def _calculate_reward(self):
         reward = 0
         try:
@@ -332,16 +309,8 @@ class PokemonAIAgent:
                     # Use state-specific features for action selection
                     state_features = moe_output['state_features'].get(self.current_game_state, vision_features_flat)
                 except Exception as e:
-                    # Fallback to CV state detector
-                    screen_array = single_frame.squeeze().cpu().numpy()
-                    if self.state_detector.detect_battle(screen_array):
-                        self.current_game_state = "battle"
-                    elif self.state_detector.detect_dialogue(screen_array):
-                        self.current_game_state = "dialogue"
-                    elif self.state_detector.detect_menu(screen_array):
-                        self.current_game_state = "menu"
-                    else:
-                        self.current_game_state = "exploring"
+                    logger.warning(f"MoE Router error: {e}, defaulting to exploring")
+                    self.current_game_state = "exploring"
 
                 action_mask = self.action_filter.get_action_mask(self.current_game_state)
                 action, log_prob, value = self.network_group.choose_action(
