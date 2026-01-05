@@ -3,8 +3,8 @@ import logging
 import torch
 import torch.nn as nn
 import numpy as np
-from .hyperparameters import HYPERPARAMETERS
-from .vision_encoder import (
+from .hyp import HYPERPARAMETERS
+from .vis import (
     ExplorationPPO,
     BattlePPO,
     MenuPPO,
@@ -103,7 +103,7 @@ class PPONetworkGroup:
 
             # Apply action mask first
             if action_mask is not None:
-                from .action_filter import ContextAwareActionFilter
+                from .act import ContextAwareActionFilter
                 policy_logits = ContextAwareActionFilter.apply_mask_to_logits(
                     policy_logits, action_mask
                 )

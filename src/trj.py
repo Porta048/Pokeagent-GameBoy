@@ -1,6 +1,6 @@
 from typing import Dict, List, Any, Tuple, Optional
 import torch
-from .hyperparameters import HYPERPARAMETERS
+from .hyp import HYPERPARAMETERS
 class TrajectoryBuffer:
     def __init__(self, capacity: int = HYPERPARAMETERS['PPO_TRAJECTORY_LENGTH']):
         self.capacity = capacity

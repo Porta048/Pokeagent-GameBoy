@@ -215,7 +215,7 @@ class MultiHeadLatentAttention(nn.Module):
 
         # Initialize INT4 quantization if enabled
         if use_int4:
-            from .int4_quantization import INT4Quantizer
+            from .int import INT4Quantizer
             self.kv_quantizer = INT4Quantizer(symmetric=True, per_channel=True)
 
         self._initialize_weights()
@@ -268,7 +268,7 @@ class MultiHeadLatentAttention(nn.Module):
                 kv_latent = self.kv_quantizer.dequantize(kv_latent_quantized, scale)
             else:
                 # Fallback: crea temporaneamente un quantizer
-                from .int4_quantization import INT4Quantizer
+                from .int import INT4Quantizer
                 quantizer = INT4Quantizer(symmetric=True, per_channel=True)
                 kv_latent_quantized, scale = quantizer.quantize(kv_latent)
                 # Per il calcolo, dequantizza

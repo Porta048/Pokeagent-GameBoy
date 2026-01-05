@@ -1,6 +1,6 @@
 import time
 from collections import deque
-from .hyperparameters import HYPERPARAMETERS
+from .hyp import HYPERPARAMETERS
 class AdaptiveEntropyScheduler:
     def __init__(self):
         self.start_entropy = HYPERPARAMETERS['PPO_ENTROPY_START']

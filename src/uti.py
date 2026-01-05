@@ -7,7 +7,7 @@ try:
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
-from .hyperparameters import HYPERPARAMETERS
+from .hyp import HYPERPARAMETERS
 class ImageCache:
     def __init__(self, max_size: int = HYPERPARAMETERS['CACHE_SIZE']):
         self.cache = {}
