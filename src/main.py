@@ -1,13 +1,10 @@
 import os
 import sys
 import time
-import threading
 import json
-import hashlib
 import logging
-from typing import Union, List, Dict, Optional, Tuple, Any
+from typing import Dict, Optional, Tuple, Any
 from collections import deque
-from functools import lru_cache
 import numpy as np
 import torch
 try:
@@ -36,9 +33,9 @@ if __package__ is None or __package__ == '':
 from .config import config
 from .memory_reader import GameMemoryReader
 from .moe_router import GameStateMoERouter
-from .utils import AsyncSaver, FrameStack, ImageCache, EXPLORATION_CONV_DIMENSIONS, MENU_CONV_DIMENSIONS
+from .utils import AsyncSaver, FrameStack, ImageCache
 from .hyperparameters import HYPERPARAMETERS
-from .errors import PokemonAIError, ROMLoadError, MemoryReadError, CheckpointLoadError, GameEnvironmentError
+from .errors import PokemonAIError, ROMLoadError
 from .anti_loop import AdaptiveEntropyScheduler, AntiLoopMemoryBuffer
 from .action_filter import ContextAwareActionFilter
 from .trajectory_buffer import TrajectoryBuffer
@@ -218,7 +215,7 @@ class PokemonAIAgent:
     def _load_checkpoint(self):
         if os.path.exists(self.model_path):
             try:
-                checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
+                checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=True)
                 self.network_group.exploration_network.load_state_dict(checkpoint['explorer_state'])
                 self.network_group.battle_network.load_state_dict(checkpoint['battle_state'])
                 self.network_group.menu_network.load_state_dict(checkpoint['menu_state'])

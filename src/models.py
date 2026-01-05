@@ -160,71 +160,6 @@ class PPONetworkGroup:
         boosted_logits[:, action_idx] += logit_boost
 
         return boosted_logits
-    def train_ppo(
-        self,
-        batch_data: Dict,
-        game_state: str,
-        entropy_coeff: float = None
-    ) -> Dict[str, float]:
-        from torch.distributions import Categorical
-        import torch.nn.functional as F
-        network, optimizer = self.select_network(game_state)
-        network.train()
-        if entropy_coeff is None:
-            entropy_coeff = HYPERPARAMETERS['PPO_ENTROPY_COEFF']
-        states = torch.stack(batch_data['states']).to(self.device)
-        actions = torch.tensor(batch_data['actions'], dtype=torch.long).to(self.device)
-        old_log_probs = torch.tensor(batch_data['old_log_probs'], dtype=torch.float32).to(self.device)
-        advantages = torch.tensor(batch_data['advantages'], dtype=torch.float32).to(self.device)
-        returns = torch.tensor(batch_data['returns'], dtype=torch.float32).to(self.device)
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        total_policy_loss = 0.0
-        total_value_loss = 0.0
-        total_entropy = 0.0
-        n_updates = 0
-        dataset_size = len(states)
-        minibatch_size = HYPERPARAMETERS['PPO_MINIBATCH_SIZE']
-        for epoch in range(HYPERPARAMETERS['PPO_EPOCHS']):
-            indices = torch.randperm(dataset_size)
-            for start in range(0, dataset_size, minibatch_size):
-                end = min(start + minibatch_size, dataset_size)
-                mb_indices = indices[start:end]
-                mb_states = states[mb_indices]
-                mb_actions = actions[mb_indices]
-                mb_old_log_probs = old_log_probs[mb_indices]
-                mb_advantages = advantages[mb_indices]
-                mb_returns = returns[mb_indices]
-                policy_logits, values = network(mb_states)
-                dist = Categorical(logits=policy_logits)
-                new_log_probs = dist.log_prob(mb_actions)
-                entropy = dist.entropy().mean()
-                ratio = torch.exp(new_log_probs - mb_old_log_probs)
-                surr1 = ratio * mb_advantages
-                surr2 = torch.clamp(
-                    ratio,
-                    1.0 - HYPERPARAMETERS['PPO_CLIP_EPSILON'],
-                    1.0 + HYPERPARAMETERS['PPO_CLIP_EPSILON']
-                ) * mb_advantages
-                policy_loss = -torch.min(surr1, surr2).mean()
-                value_loss = F.mse_loss(values.squeeze(), mb_returns)
-                loss = (
-                    policy_loss +
-                    HYPERPARAMETERS['PPO_VALUE_COEFF'] * value_loss -
-                    entropy_coeff * entropy
-                )
-                optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(network.parameters(), HYPERPARAMETERS['PPO_MAX_GRAD_NORM'])
-                optimizer.step()
-                total_policy_loss += policy_loss.item()
-                total_value_loss += value_loss.item()
-                total_entropy += entropy.item()
-                n_updates += 1
-        return {
-            'policy_loss': total_policy_loss / n_updates,
-            'value_loss': total_value_loss / n_updates,
-            'entropy': total_entropy / n_updates
-        }
 
     def train_grpo(
         self,
@@ -265,8 +200,7 @@ class PPONetworkGroup:
         advantages = torch.tensor(batch_data['advantages'], dtype=torch.float32).to(self.device)
         returns = torch.tensor(batch_data['returns'], dtype=torch.float32).to(self.device)
 
-        # GRPO: Advantages already normalized by group in trajectory buffer
-        # No additional normalization (key difference from train_ppo line 117)
+        # GRPO: Advantages pre-normalized by group in trajectory buffer
 
         total_policy_loss = 0.0
         total_value_loss = 0.0

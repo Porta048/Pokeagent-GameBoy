@@ -23,8 +23,6 @@ class GameMemoryReader:
         self.last_position = None
         self.previous_event_flags = set()
         self.previous_trainer_flags = set()
-        self.wild_battle_count = 0
-        self.last_average_level = 0
         self.recent_level_ups = deque(maxlen=10)  
     def get_current_state(self) -> dict:
         try:
@@ -93,9 +91,6 @@ class GameMemoryReader:
         total_reward += r
         r = self._calculate_battle_rewards(current_state)
         if r != 0: reward_details['battle'] = r
-        total_reward += r
-        r = self.calculate_curiosity_reward(current_state)
-        if r != 0: reward_details['curiosity'] = r
         total_reward += r
         r = self._calculate_event_flags_rewards(current_state)
         if r != 0: reward_details['events'] = r
@@ -199,21 +194,9 @@ class GameMemoryReader:
         hp_prev = self.previous_state.get('hp_team', [0] * 6)
         reward = 0.0
         for i in range(min(len(hp_curr), len(hp_prev), len(hp_max_curr))):
-            if hp_max_curr[i] > 0:  
+            if hp_max_curr[i] > 0:
                 hp_recovered = hp_curr[i] - hp_prev[i]
                 if hp_recovered > 0:
                     recovery_percent = hp_recovered / hp_max_curr[i]
-                    reward += recovery_percent * 5.0  
-        return reward
-    def calculate_curiosity_reward(self, current_state: dict) -> float:
-        reward = 0.0
-        current_map = current_state.get('map_id', 0)
-        if not hasattr(self, 'maps_visited'):
-            self.maps_visited = set()
-        if current_map not in self.maps_visited:
-            self.maps_visited.add(current_map)
-            reward += 100.0  
-        pokedex_seen = current_state.get('pokedex_seen', 0)
-        if pokedex_seen > self.previous_state.get('pokedex_seen', 0):
-            reward += 50.0 * (pokedex_seen - self.previous_state.get('pokedex_seen', 0))
+                    reward += recovery_percent * 5.0
         return reward

@@ -15,37 +15,51 @@ class ImageCache:
         self.max_size = max_size
         self.access_counters = {}
         self.cleanup_threshold = int(max_size * 0.8)
+        self._lock = threading.Lock()
+
     def _get_image_hash(self, img: np.ndarray) -> str:
         return hashlib.md5(img.tobytes()).hexdigest()
+
     def get(self, img: np.ndarray) -> 'np.ndarray':
         h = self._get_image_hash(img)
-        if h in self.cache:
-            try:
-                self.access_queue.remove(h)
-                self.access_queue.append(h)
-            except ValueError: pass
-            self.access_counters[h] = self.access_counters.get(h, 0) + 1
-            return self.cache[h]
+        with self._lock:
+            if h in self.cache:
+                try:
+                    self.access_queue.remove(h)
+                    self.access_queue.append(h)
+                except ValueError:
+                    pass
+                self.access_counters[h] = self.access_counters.get(h, 0) + 1
+                return self.cache[h]
         return None
+
     def save(self, img: np.ndarray, img_proc: np.ndarray):
         h = self._get_image_hash(img)
-        if h in self.cache: return
-        if len(self.cache) >= self.cleanup_threshold: self._cleanup()
-        if len(self.cache) >= self.max_size:
-            h_old = self.access_queue.popleft()
-            self.cache.pop(h_old, None)
-            self.access_counters.pop(h_old, None)
-        self.cache[h] = img_proc
-        self.access_queue.append(h)
-        self.access_counters[h] = 1
-    def _cleanup(self):
+        with self._lock:
+            if h in self.cache:
+                return
+            if len(self.cache) >= self.cleanup_threshold:
+                self._cleanup_unlocked()
+            if len(self.cache) >= self.max_size:
+                h_old = self.access_queue.popleft()
+                self.cache.pop(h_old, None)
+                self.access_counters.pop(h_old, None)
+            self.cache[h] = img_proc
+            self.access_queue.append(h)
+            self.access_counters[h] = 1
+
+    def _cleanup_unlocked(self):
+        """Internal cleanup - must be called with lock held."""
         if len(self.access_counters) > 10:
             sorted_items = sorted(self.access_counters.items(), key=lambda x: x[1])
             n_remove = int(len(sorted_items) * 0.2)
             for h, _ in sorted_items[:n_remove]:
                 if h in self.cache:
                     del self.cache[h]
-                    self.access_queue.remove(h)
+                    try:
+                        self.access_queue.remove(h)
+                    except ValueError:
+                        pass
                     del self.access_counters[h]
 class AsyncSaver:
     def __init__(self):
@@ -88,11 +102,3 @@ class FrameStack:
         if TORCH_AVAILABLE and (torch.cuda.is_available() or torch.backends.mps.is_available()):  
             return torch.cat(list(self.frames), dim=0)
         return np.concatenate(list(self.frames), axis=0)
-def calculate_conv_output_dimensions(input_height, input_width, conv_layers):
-    h, w = input_height, input_width
-    for kernel_size, stride in conv_layers:
-        h = (h - kernel_size) // stride + 1
-        w = (w - kernel_size) // stride + 1
-    return h, w
-EXPLORATION_CONV_DIMENSIONS = calculate_conv_output_dimensions(144, 160, [(8, 4), (4, 2), (3, 1)])
-MENU_CONV_DIMENSIONS = calculate_conv_output_dimensions(144, 160, [(4, 2), (3, 2)])

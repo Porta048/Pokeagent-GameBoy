@@ -25,7 +25,6 @@ class TestGameMemoryReader:
         assert reader.previous_state == {}
         assert len(reader.visited_coordinates) == 0
         assert len(reader.previous_event_flags) == 0
-        assert reader.wild_battle_count == 0
 
     def test_badge_reward_calculation(self, reader):
         """Test that badge acquisition gives large reward."""
@@ -55,7 +54,7 @@ class TestGameMemoryReader:
 
         reward = reader._calculate_pokemon_rewards(current_state)
 
-        assert reward == 300  # 300 per caught Pokemon (V2.0 - doubled from V1.0)
+        assert reward == 300
 
     def test_pokemon_seen_reward(self, reader):
         """Test that seeing new Pokemon gives smaller reward."""
@@ -64,7 +63,7 @@ class TestGameMemoryReader:
 
         reward = reader._calculate_pokemon_rewards(current_state)
 
-        assert reward == 30  # 30 per seen Pokemon (V2.0 - increased from 20)
+        assert reward == 30
 
     def test_exploration_map_change_reward(self, reader):
         """Test that changing maps gives exploration reward."""
@@ -107,7 +106,7 @@ class TestGameMemoryReader:
 
         reward = reader._calculate_battle_rewards(current_state)
 
-        assert reward == 120  # Victory reward (V2.1 - optimized from 80 to 120)
+        assert reward == 120
 
     def test_battle_loss_penalty(self, reader):
         """Test that losing a battle gives penalty."""
@@ -122,7 +121,7 @@ class TestGameMemoryReader:
 
         reward = reader._calculate_battle_rewards(current_state)
 
-        assert reward == -200  # Loss penalty (V2.0 - doubled from -100 to teach strategy)
+        assert reward == -200
 
     def test_navigation_reward_new_coordinate(self, reader):
         """Test that visiting new coordinate gives reward."""
@@ -130,7 +129,7 @@ class TestGameMemoryReader:
 
         reward = reader._calculate_navigation_rewards(state)
 
-        assert reward == 5.0  # New coordinate bonus (V2.1 - optimized from 2.0 to 5.0)
+        assert reward == 5.0
 
     def test_navigation_no_reward_revisit(self, reader):
         """Test that revisiting coordinate gives no reward."""

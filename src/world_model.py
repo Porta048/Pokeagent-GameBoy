@@ -2,7 +2,7 @@ from typing import Tuple, Optional, Dict, List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import Normal, Independent, OneHotCategorical
+from torch.distributions import OneHotCategorical
 class DreamerV3WorldModelEncoder(nn.Module):
     """
     Enhanced encoder for DreamerV3 world model with improved architecture.
@@ -556,7 +556,7 @@ class WorldModelTrainer:
         }, path)
 
     def load(self, path: str):
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=True)
         self.world_model.load_state_dict(checkpoint['world_model'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
 
