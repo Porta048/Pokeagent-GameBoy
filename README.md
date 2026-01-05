@@ -36,13 +36,19 @@ Agente AI completamente autonomo che impara a giocare Pokemon Rosso/Blu dall'ini
 
 ### Sistema di Reward Gerarchico
 
-Formula matematica per bilanciare obiettivi a breve e lungo termine:
+Formula matematica avanzata per bilanciare obiettivi a breve e lungo termine:
 
 ```
-R_totale = α * R_primario + β * R_secondario + γ * R_intrinseco + R_penalità
+R_totale = α(t) * R_primario + β(t) * R_secondario + γ(t) * R_intrinseco + R_penalità
 ```
 
-Dove α, β, γ sono pesi adattivi che si aggiustano in base ai progressi.
+Dove i pesi adattivi si aggiornano dinamicamente secondo le seguenti formule:
+
+- **α(t) = α₀ * (1 + ρ_progressi)** - Aumenta con i progressi (badge, pokedex)
+- **β(t) = β₀ * (1 + ρ_stallo * e^(-Δt_senza_progressi/τ))** - Aumenta quando l'agente è bloccato
+- **γ(t) = γ₀ * (1 + ρ_esplorazione * H(s))** - Aumenta con l'entropia dello stato
+
+Dove: α₀=0.3, β₀=0.4, γ₀=0.3, ρ_progressi=0.1, ρ_stallo=0.5, ρ_esplorazione=0.2, τ=300s.
 
 ### LLM Integration (Novita V5.0)
 

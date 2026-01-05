@@ -3,33 +3,26 @@ import sys
 import time
 import json
 import logging
-from typing import Dict, Optional, Tuple, Any
+from typing import Dict, Optional
 from collections import deque
+
 import numpy as np
 import torch
-try:
-    import torch.nn as nn
-    import torch.nn.functional as F
-    import torch.optim as optim
-    from torch.distributions import Categorical
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
-    print("WARNING: PyTorch not found. Install with: pip install torch")
+import torch.nn as nn
+
 try:
     from pyboy import PyBoy
     import keyboard
     from PIL import Image
-    import cv2
     DEPS_AVAILABLE = True
 except ImportError as e:
     DEPS_AVAILABLE = False
-    print(f"WARNING: Missing dependencies: {e}")
+    print(f"Missing dependencies: {e}")
+
 if __package__ is None or __package__ == '':
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
     __package__ = "src"
+
 from .cfg import config
 from .mem import GameMemoryReader
 from .moe import GameStateMoERouter
@@ -43,100 +36,76 @@ from .mod import PPONetworkGroup
 from .swm import SimpleWorldModel, compute_world_model_loss
 from .llm import OllamaLLMClient, LLMConfig
 from .hrs import HierarchicalRewardCalculator
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('pokemon_ai.log'),
-        logging.StreamHandler()
-    ]
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.FileHandler('pokemon_ai.log'), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
+
+
 class PokemonAIAgent:
-    def __init__(self, rom_path: str, headless: bool = False) -> None:
-        if not TORCH_AVAILABLE or not DEPS_AVAILABLE:
-            raise PokemonAIError("Missing dependencies. Install: torch, pyboy, keyboard, PIL, cv2")
+    def __init__(self, rom_path: str, headless: bool = False):
+        if not DEPS_AVAILABLE:
+            raise PokemonAIError("Missing dependencies: torch, pyboy, keyboard, PIL")
+
         self.device = config.DEVICE
-        print(f"Using device: {self.device}")
-        self.use_shared_buffer = False  
-        self.shared_buffer = None
-        self.rank = 0  
-        window_type = "headless" if headless else "SDL2"
+        print(f"Device: {self.device}")
+
         try:
-            self.pyboy = PyBoy(rom_path, window=window_type)
+            self.pyboy = PyBoy(rom_path, window="headless" if headless else "SDL2")
         except Exception as e:
-            raise ROMLoadError(f"Failed to load ROM file '{rom_path}': {str(e)}") from e
-        emulation_speed = config.EMULATION_SPEED
-        self.pyboy.set_emulation_speed(emulation_speed)
-        speed_desc = "unlimited" if emulation_speed == 0 else f"{emulation_speed}x"
-        print(f"[INFO] Emulation speed: {speed_desc}")
+            raise ROMLoadError(f"Failed to load ROM '{rom_path}': {e}") from e
+
+        self.pyboy.set_emulation_speed(config.EMULATION_SPEED)
         self.actions = config.ACTIONS
+
         rom_name = os.path.splitext(os.path.basename(rom_path))[0]
         self.save_dir = f"{config.SAVE_DIR_PREFIX}_{rom_name}"
         os.makedirs(self.save_dir, exist_ok=True)
         self.model_path = os.path.join(self.save_dir, config.MODEL_FILENAME)
         self.stats_path = os.path.join(self.save_dir, config.STATS_FILENAME)
         self.game_state_path = os.path.join(self.save_dir, config.GAME_STATE_FILENAME)
-        input_channels = config.FRAME_STACK_SIZE
-        self.network_group = PPONetworkGroup(
-            len(self.actions),
-            self.device,
-            input_channels
-        )
 
-        # World Model for imagination training
+        self.network_group = PPONetworkGroup(len(self.actions), self.device, config.FRAME_STACK_SIZE)
         self.world_model = SimpleWorldModel(
-            input_channels=config.FRAME_STACK_SIZE,
-            latent_dim=HYPERPARAMETERS['WORLD_MODEL_LATENT_DIM'],
-            action_dim=len(self.actions),
-            hidden_dim=256
+            config.FRAME_STACK_SIZE, HYPERPARAMETERS['WORLD_MODEL_LATENT_DIM'],
+            len(self.actions), 256
         ).to(self.device)
-
-        self.world_model_optimizer = torch.optim.Adam(
-            self.world_model.parameters(),
-            lr=HYPERPARAMETERS['WORLD_MODEL_LR']
-        )
-
-        self.world_model_enabled = False  # Will enable after 10k frames
+        self.world_model_optimizer = torch.optim.Adam(self.world_model.parameters(), lr=HYPERPARAMETERS['WORLD_MODEL_LR'])
+        self.world_model_enabled = False
         self.imagination_horizon = HYPERPARAMETERS['WORLD_MODEL_IMAGINATION_HORIZON']
 
         self.trajectory_buffer = TrajectoryBuffer()
         self.frame_stack = FrameStack(config.FRAME_STACK_SIZE)
         self.image_cache = ImageCache()
         self.memory_reader = GameMemoryReader(self.pyboy)
-        # ExplorationPPO backbone outputs 192-dim features (vision_encoder.py:547)
-        self.moe_router = GameStateMoERouter(vision_features_dim=192, state_embedding_dim=256)
-        self.moe_router.to(self.device)
+        self.moe_router = GameStateMoERouter(vision_features_dim=192, state_embedding_dim=256).to(self.device)
         self.async_saver = AsyncSaver()
         self.entropy_scheduler = AdaptiveEntropyScheduler()
         self.anti_loop_buffer = AntiLoopMemoryBuffer()
         self.action_filter = ContextAwareActionFilter()
         self.current_game_state = "exploring"
         self.last_screen_array = None
+        self.action_history = []
+        self.llm_decisions = 0
+        self.rl_fallbacks = 0
 
-        # LLM Integration (ministral-3b via Ollama)
         llm_config = LLMConfig(
-            enabled=config.LLM_ENABLED,
-            host=config.LLM_HOST,
-            model=config.LLM_MODEL,
-            temperature=config.LLM_TEMPERATURE,
-            timeout=config.LLM_TIMEOUT,
-            min_interval_ms=config.LLM_MIN_INTERVAL_MS,
-            max_calls_per_minute=config.LLM_MAX_CALLS_PER_MINUTE,
-            cache_ttl_seconds=config.LLM_CACHE_TTL_SECONDS,
-            use_vision=config.LLM_USE_VISION,
-            use_for_exploration=config.LLM_USE_FOR_EXPLORATION,
-            use_for_battle=config.LLM_USE_FOR_BATTLE,
-            use_for_menu=config.LLM_USE_FOR_MENU,
+            enabled=config.LLM_ENABLED, host=config.LLM_HOST, model=config.LLM_MODEL,
+            temperature=config.LLM_TEMPERATURE, timeout=config.LLM_TIMEOUT,
+            min_interval_ms=config.LLM_MIN_INTERVAL_MS, max_calls_per_minute=config.LLM_MAX_CALLS_PER_MINUTE,
+            cache_ttl_seconds=config.LLM_CACHE_TTL_SECONDS, use_vision=config.LLM_USE_VISION,
+            use_for_exploration=config.LLM_USE_FOR_EXPLORATION, use_for_battle=config.LLM_USE_FOR_BATTLE,
+            use_for_menu=config.LLM_USE_FOR_MENU
         )
         self.llm_client = OllamaLLMClient(llm_config)
-        if self.llm_client.available:
-            print(f"[LLM] {config.LLM_MODEL} ready for strategic reasoning")
-        else:
-            print(f"[LLM] Disabled or unavailable - using pure RL")
+        print(f"[LLM] {'Ready' if self.llm_client.available else 'Disabled'}")
 
-        # Initialize hierarchical reward calculator with LLM integration
-        self.hierarchical_reward_calculator = HierarchicalRewardCalculator(llm_client=self.llm_client if self.llm_client.available else None)
+        self.hierarchical_reward_calculator = HierarchicalRewardCalculator(
+            llm_client=self.llm_client if self.llm_client.available else None
+        )
 
         self.stats = self._load_stats()
         self.episode_count = 0
@@ -146,264 +115,185 @@ class PokemonAIAgent:
         self.loss_history = deque(maxlen=100)
         self._load_checkpoint()
 
-    def _detect_game_state_moe(self, vision_features: torch.Tensor, memory_features: torch.Tensor) -> str:
-        with torch.no_grad():
-            moe_output = self.moe_router(vision_features, memory_features)
-            predicted_state_idx = moe_output["predicted_state"].item()
-            return self.moe_router.get_state_name(predicted_state_idx)
-
-    def _extract_memory_features(self, memory_state: Dict) -> torch.Tensor:
-        """
-        Extract numerical features from game memory state for MoE Router.
-        """
-        # Create a fixed-size feature vector from memory state
+    def _extract_memory_features(self, mem: Dict) -> torch.Tensor:
         features = torch.zeros(128, dtype=torch.float32, device=self.device)
-
-        # Position features (0-2)
-        features[0] = memory_state.get('pos_x', 0) / 255.0  # Normalize position
-        features[1] = memory_state.get('pos_y', 0) / 255.0
-        features[2] = memory_state.get('map_id', 0) / 255.0  # Normalize map ID
-
-        # Badge count (3)
-        features[3] = memory_state.get('badges', 0) / 8.0  # Normalize badge count (0-8)
-
-        # Pokemon counts (4-6)
-        features[4] = memory_state.get('pokedex_caught', 0) / 151.0  # Normalize caught Pokemon
-        features[5] = memory_state.get('pokedex_seen', 0) / 151.0    # Normalize seen Pokemon
-        features[6] = memory_state.get('party_count', 0) / 6.0       # Normalize party size
-
-        # Money (7)
-        features[7] = min(memory_state.get('money', 0) / 100000.0, 1.0)  # Normalize money
-
-        # Battle state (8-10)
-        features[8] = 1.0 if memory_state.get('in_battle', False) else 0.0
-        features[9] = memory_state.get('player_hp', 0) / 1000.0  # Normalize HP
-        features[10] = memory_state.get('enemy_hp', 0) / 1000.0  # Normalize enemy HP
-
-        # Additional state features (11-127)
-        # Add more features as needed based on game state
-
-        return features.unsqueeze(0)  # Add batch dimension
+        features[0] = mem.get('pos_x', 0) / 255.0
+        features[1] = mem.get('pos_y', 0) / 255.0
+        features[2] = mem.get('map_id', 0) / 255.0
+        features[3] = mem.get('badges', 0) / 8.0
+        features[4] = mem.get('pokedex_caught', 0) / 151.0
+        features[5] = mem.get('pokedex_seen', 0) / 151.0
+        features[6] = mem.get('party_count', 0) / 6.0
+        features[7] = min(mem.get('money', 0) / 100000.0, 1.0)
+        features[8] = 1.0 if mem.get('in_battle') else 0.0
+        return features.unsqueeze(0)
 
     def _load_stats(self):
         if os.path.exists(self.stats_path):
             try:
-                with open(self.stats_path, 'r') as f:
+                with open(self.stats_path) as f:
                     return json.load(f)
-            except Exception as e:
-                logger.warning(f"Could not load stats file: {str(e)}, starting with default stats")
-                return {'episodes': 0, 'total_frames': 0, 'best_reward': float('-inf')}
+            except Exception:
+                pass
         return {'episodes': 0, 'total_frames': 0, 'best_reward': float('-inf')}
+
     def _save_stats(self):
         try:
-            final_state = self.memory_reader.get_current_state()
-            if final_state:
-                serializable_state = {}
-                for key, value in final_state.items():
-                    if isinstance(value, set):
-                        serializable_state[key] = list(value)
-                    else:
-                        serializable_state[key] = value
-                self.stats['final_state'] = serializable_state
+            state = self.memory_reader.get_current_state()
+            if state:
+                self.stats['final_state'] = {k: list(v) if isinstance(v, set) else v for k, v in state.items()}
             self.stats.update({
                 'episodes': self.episode_count,
                 'total_frames': self.stats.get('total_frames', 0) + self.frame_count,
                 'best_reward': max(self.stats.get('best_reward', float('-inf')), self.total_reward)
             })
-            if len(self.reward_history) > 0:
-                self.stats['avg_reward_last_1000'] = float(np.mean(list(self.reward_history)))
+            if self.reward_history:
+                self.stats['avg_reward'] = float(np.mean(list(self.reward_history)))
             with open(self.stats_path, 'w') as f:
                 json.dump(self.stats, f, indent=2)
         except Exception as e:
-            logger.error(f"Could not save stats file: {str(e)}")
+            logger.error(f"Save stats failed: {e}")
+
     def _load_checkpoint(self):
-        if os.path.exists(self.model_path):
-            try:
-                checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=True)
-                self.network_group.exploration_network.load_state_dict(checkpoint['explorer_state'])
-                self.network_group.battle_network.load_state_dict(checkpoint['battle_state'])
-                self.network_group.menu_network.load_state_dict(checkpoint['menu_state'])
+        if not os.path.exists(self.model_path):
+            return
+        try:
+            ckpt = torch.load(self.model_path, map_location=self.device, weights_only=True)
+            self.network_group.exploration_network.load_state_dict(ckpt['explorer_state'])
+            self.network_group.battle_network.load_state_dict(ckpt['battle_state'])
+            self.network_group.menu_network.load_state_dict(ckpt['menu_state'])
+            if 'moe_router_state' in ckpt:
+                self.moe_router.load_state_dict(ckpt['moe_router_state'])
+            if 'world_model_state' in ckpt:
+                try:
+                    self.world_model.load_state_dict(ckpt['world_model_state'])
+                    self.world_model_optimizer.load_state_dict(ckpt['world_model_optimizer_state'])
+                except RuntimeError:
+                    logger.warning("World model architecture changed, training from scratch")
+            self.episode_count = ckpt.get('episode', 0)
+            self.frame_count = ckpt.get('frame', 0)
+            print(f"[LOAD] Episode {self.episode_count}, Frame {self.frame_count}")
+            if os.path.exists(self.game_state_path):
+                try:
+                    with open(self.game_state_path, 'rb') as f:
+                        self.pyboy.load_state(f)
+                except Exception:
+                    pass
+        except Exception as e:
+            raise PokemonAIError(f"Checkpoint load failed: {e}") from e
 
-                # Load MoE Router if available in checkpoint
-                if 'moe_router_state' in checkpoint:
-                    self.moe_router.load_state_dict(checkpoint['moe_router_state'])
-
-                # Load World Model if available in checkpoint
-                if 'world_model_state' in checkpoint:
-                    try:
-                        self.world_model.load_state_dict(checkpoint['world_model_state'])
-                        self.world_model_optimizer.load_state_dict(checkpoint['world_model_optimizer_state'])
-                        logger.info("[LOAD] World model loaded from checkpoint")
-                    except RuntimeError as wm_error:
-                        logger.warning(f"[LOAD] Could not load world model (architecture changed): {wm_error}")
-                        logger.info("[LOAD] World model will be trained from scratch")
-
-                self.episode_count = checkpoint.get('episode', 0)
-                self.frame_count = checkpoint.get('frame', 0)
-                print(f"[LOAD] Checkpoint loaded: episode {self.episode_count}, frame {self.frame_count}")
-                if os.path.exists(self.game_state_path):
-                    try:
-                        with open(self.game_state_path, 'rb') as f:
-                            self.pyboy.load_state(f)
-                        print(f"[LOAD] Game state loaded from {self.game_state_path}")
-                    except Exception as e:
-                        logger.warning(f"Unable to load game state: {e}")
-                        print("[INFO] Starting from beginning of game")
-            except Exception as e:
-                import logging
-                logging.error(f"Error loading checkpoint: {e}")
-                raise PokemonAIError(f"Failed to load checkpoint: {e}") from e
     def _save_checkpoint(self):
-        checkpoint = {
+        ckpt = {
             'explorer_state': self.network_group.exploration_network.state_dict(),
             'battle_state': self.network_group.battle_network.state_dict(),
             'menu_state': self.network_group.menu_network.state_dict(),
             'moe_router_state': self.moe_router.state_dict(),
             'world_model_state': self.world_model.state_dict(),
             'world_model_optimizer_state': self.world_model_optimizer.state_dict(),
-            'episode': self.episode_count,
-            'frame': self.frame_count
+            'episode': self.episode_count, 'frame': self.frame_count
         }
-        self.async_saver.save_async(lambda d: torch.save(d, self.model_path), checkpoint)
+        self.async_saver.save_async(lambda d: torch.save(d, self.model_path), ckpt)
         try:
             with open(self.game_state_path, 'wb') as f:
                 self.pyboy.save_state(f)
-        except Exception as e:
-            logger.warning(f"Unable to save game state: {e}")
+        except Exception:
+            pass
+
     def _get_screen_tensor(self):
         try:
-            screen = self.pyboy.screen.image  
-            gray = np.array(screen.convert('L'))
+            gray = np.array(self.pyboy.screen.image.convert('L'))
             self.last_screen_array = gray.copy()
             cached = self.image_cache.get(gray)
-            if cached is not None:
-                normalized = cached
-            else:
-                normalized = gray.astype(np.float32) / 255.0
+            normalized = cached if cached is not None else gray.astype(np.float32) / 255.0
+            if cached is None:
                 self.image_cache.save(gray, normalized)
-            tensor = torch.from_numpy(normalized).unsqueeze(0)
-            return tensor.to(self.device)
-        except Exception as e:
-            logger.error(f"Error getting screen tensor: {str(e)}")
-            blank_frame = torch.zeros((1, 144, 160), dtype=torch.float32, device=self.device)
-            return blank_frame
+            return torch.from_numpy(normalized).unsqueeze(0).to(self.device)
+        except Exception:
+            return torch.zeros((1, 144, 160), dtype=torch.float32, device=self.device)
+
     def _calculate_reward(self):
-        reward = 0
         try:
-            memory_state = self.memory_reader.get_current_state()
+            mem = self.memory_reader.get_current_state()
+            prev = self.memory_reader.previous_state
 
-            # Get the previous state for comparison
-            previous_memory_state = self.memory_reader.previous_state
-
-            # Get loop penalty from anti-loop system (still used in hierarchical system)
             loop_penalty = 0.0
+            curiosity_bonus = 0.0
+            exploration_bonus = 0.0
+
             if config.ANTI_LOOP_ENABLED:
                 loop_penalty = self.anti_loop_buffer.calculate_loop_penalty()
-                if loop_penalty < 0 and self.frame_count % 5000 == 0:
-                    print(f"[ANTI-LOOP] Loop detected! Penalty: {loop_penalty:.2f}")
+                curiosity_bonus = self.anti_loop_buffer.get_curiosity_reward()
+                exploration_bonus = self.anti_loop_buffer.get_exploration_bonus(
+                    mem.get('pos_x', 0), mem.get('pos_y', 0), mem.get('map_id', 0)
+                )
 
-            # Calculate hierarchical reward using the new system
-            total_reward, reward_details = self.hierarchical_reward_calculator.calculate_total_reward(
-                current_state=memory_state,
-                previous_state=previous_memory_state,
-                loop_penalty=loop_penalty,
-                screen_array=self.last_screen_array
+            reward, details = self.hierarchical_reward_calculator.calculate_total_reward(
+                mem, prev, loop_penalty, self.last_screen_array
             )
 
-            reward = total_reward
+            reward += curiosity_bonus + exploration_bonus
 
-            # Print reward details if there are any
-            if reward_details:
-                print(f"[HIERARCHICAL_REWARD] {reward_details} = {reward:.4f}")
+            if curiosity_bonus > 0:
+                details['curiosity'] = round(curiosity_bonus, 4)
+            if exploration_bonus > 0:
+                details['exploration'] = round(exploration_bonus, 4)
 
-            # Update reward history and total
+            if details and self.frame_count % 100 == 0:
+                print(f"[REWARD] {details} = {reward:.4f}")
+
             self.reward_history.append(reward)
             self.total_reward += reward
             return reward
         except Exception as e:
-            logger.error(f"Error calculating hierarchical reward: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Reward calc failed: {e}")
             return -1.0
 
-    def _train_world_model(self, trajectory_buffer) -> Dict[str, float]:
-        """Train world model to predict next state, reward, done."""
+    def _train_world_model(self, buf) -> Dict[str, float]:
         self.world_model.train()
+        total_latent, total_reward_loss, total_done, n = 0.0, 0.0, 0.0, 0
+        max_idx = len(buf.states) - self.imagination_horizon
+        if max_idx < 1:
+            return {'latent_loss': 0, 'reward_loss': 0, 'done_loss': 0}
 
-        total_latent_loss = 0.0
-        total_reward_loss = 0.0
-        total_done_loss = 0.0
-        n_updates = 0
-
-        # Sample sequences from trajectory buffer
-        max_start_idx = len(trajectory_buffer.states) - self.imagination_horizon
-        if max_start_idx < 1:
-            return {
-                'latent_loss': 0.0,
-                'reward_loss': 0.0,
-                'done_loss': 0.0
-            }
-
-        for i in range(max_start_idx):
-            # Get sequence: states, actions, rewards, dones
-            states = []
-            next_states = []
-            actions = []
-            rewards = []
-            dones = []
-
-            for j in range(i, min(i + self.imagination_horizon, len(trajectory_buffer.states) - 1)):
-                states.append(trajectory_buffer.states[j])
-                next_states.append(trajectory_buffer.states[j + 1])
-                actions.append(trajectory_buffer.actions[j])
-                rewards.append(trajectory_buffer.rewards[j])
-                dones.append(trajectory_buffer.dones[j])
-
-            if len(states) == 0:
+        for i in range(max_idx):
+            states, next_states, actions, rewards, dones = [], [], [], [], []
+            for j in range(i, min(i + self.imagination_horizon, len(buf.states) - 1)):
+                states.append(buf.states[j])
+                next_states.append(buf.states[j + 1])
+                actions.append(buf.actions[j])
+                rewards.append(buf.rewards[j])
+                dones.append(buf.dones[j])
+            if not states:
                 continue
 
-            # Convert to tensors
-            states_t = torch.stack(states).to(self.device)
-            next_states_t = torch.stack(next_states).to(self.device)
-            actions_t = torch.tensor(actions, dtype=torch.long).to(self.device)
-            rewards_t = torch.tensor(rewards, dtype=torch.float32).to(self.device)
-            dones_t = torch.tensor(dones, dtype=torch.float32).to(self.device)
-
-            # Compute world model loss
             losses = compute_world_model_loss(
                 self.world_model,
-                states_t,
-                actions_t,
-                next_states_t,
-                rewards_t,
-                dones_t
+                torch.stack(states).to(self.device),
+                torch.tensor(actions, dtype=torch.long, device=self.device),
+                torch.stack(next_states).to(self.device),
+                torch.tensor(rewards, dtype=torch.float32, device=self.device),
+                torch.tensor(dones, dtype=torch.float32, device=self.device)
             )
-
-            # Backprop
             self.world_model_optimizer.zero_grad()
             losses['total_loss'].backward()
             nn.utils.clip_grad_norm_(self.world_model.parameters(), 1.0)
             self.world_model_optimizer.step()
-
-            total_latent_loss += losses['latent_loss'].item()
+            total_latent += losses['latent_loss'].item()
             total_reward_loss += losses['reward_loss'].item()
-            total_done_loss += losses['done_loss'].item()
-            n_updates += 1
+            total_done += losses['done_loss'].item()
+            n += 1
 
         return {
-            'latent_loss': total_latent_loss / max(n_updates, 1),
-            'reward_loss': total_reward_loss / max(n_updates, 1),
-            'done_loss': total_done_loss / max(n_updates, 1)
+            'latent_loss': total_latent / max(n, 1),
+            'reward_loss': total_reward_loss / max(n, 1),
+            'done_loss': total_done / max(n, 1)
         }
 
-    def start_training(self) -> None:
-        paused = False
-        last_save_frame = 0
-        perf_start_time = time.time()
-        perf_frame_count = 0
-        initial_frame = self._get_screen_tensor()
-        self.frame_stack.reset(initial_frame)
-        render_counter = 0
+    def start_training(self):
+        paused, last_save = False, 0
+        perf_start, perf_frames = time.time(), 0
+        self.frame_stack.reset(self._get_screen_tensor())
+
         try:
             while True:
                 if keyboard.is_pressed('escape'):
@@ -412,253 +302,152 @@ class PokemonAIAgent:
                     paused = not paused
                     time.sleep(0.3)
                 if keyboard.is_pressed('+') or keyboard.is_pressed('='):
-                    current_speed = config.EMULATION_SPEED
-                    config.EMULATION_SPEED = min(current_speed + 1, 10)
+                    config.EMULATION_SPEED = min(config.EMULATION_SPEED + 1, 10)
                     self.pyboy.set_emulation_speed(config.EMULATION_SPEED)
-                    print(f"[INFO] Speed: {config.EMULATION_SPEED}x")
                     time.sleep(0.2)
-                if keyboard.is_pressed('-') or keyboard.is_pressed('_'):
-                    current_speed = config.EMULATION_SPEED
-                    config.EMULATION_SPEED = max(current_speed - 1, 0)
+                if keyboard.is_pressed('-'):
+                    config.EMULATION_SPEED = max(config.EMULATION_SPEED - 1, 0)
                     self.pyboy.set_emulation_speed(config.EMULATION_SPEED)
-                    speed_desc = "unlimited" if config.EMULATION_SPEED == 0 else f"{config.EMULATION_SPEED}x"
-                    print(f"[INFO] Speed: {speed_desc}")
                     time.sleep(0.2)
                 if paused:
                     self.pyboy.tick()
                     continue
-                single_frame = self._get_screen_tensor()
-                self.frame_stack.add(single_frame)
-                stacked_state = self.frame_stack.get_stack()
 
-                # Get game memory features for reliable state detection
-                memory_state = self.memory_reader.get_current_state()
-                memory_features = self._extract_memory_features(memory_state)
+                frame = self._get_screen_tensor()
+                self.frame_stack.add(frame)
+                stacked = self.frame_stack.get_stack()
+                mem = self.memory_reader.get_current_state()
 
-                # Use memory-based state detection (more reliable than untrained MoE Router)
-                # This can be replaced with MoE Router once it's properly trained
-                if memory_state.get('in_battle', False):
-                    self.current_game_state = "battle"
+                self.current_game_state = "battle" if mem.get('in_battle') else "exploring"
+
+                # LLM is PRIMARY decision maker
+                llm_action = self.llm_client.get_action(
+                    self.current_game_state, mem, self.last_screen_array, self.action_history
+                )
+
+                if llm_action is not None:
+                    action = llm_action
+                    log_prob = 0.0
+                    _, _, value = self.network_group.choose_action(stacked, self.current_game_state, deterministic=True)
+                    value = value
+                    self.llm_decisions += 1
                 else:
-                    # Simple heuristic: check if position is changing
-                    # Dialogue state = same position for multiple frames
-                    # Exploring state = position changing
-                    self.current_game_state = "exploring"
+                    # RL network as FALLBACK
+                    mask = self.action_filter.get_action_mask(self.current_game_state)
+                    action, log_prob, value = self.network_group.choose_action(stacked, self.current_game_state, action_mask=mask)
+                    self.rl_fallbacks += 1
 
-                action_mask = self.action_filter.get_action_mask(self.current_game_state)
+                self.action_history.append(self.actions[action])
+                if len(self.action_history) > 20:
+                    self.action_history.pop(0)
 
-                # Get LLM strategic suggestion (rate-limited, cached)
-                llm_response = self.llm_client.get_action_bias(
-                    self.current_game_state,
-                    memory_state,
-                    screen_array=self.last_screen_array
-                )
-
-                action, log_prob, value = self.network_group.choose_action(
-                    stacked_state, self.current_game_state, action_mask=action_mask,
-                    llm_bias=llm_response
-                )
                 button = self.actions[action]
-                if button is not None:
+                if button:
                     self.pyboy.button_press(button)
-                frameskip = config.FRAMESKIP_MAP.get(self.current_game_state, config.FRAMESKIP_MAP["base"])
-                # PyBoy tick(count, render=True) renderizza solo l'ultimo frame
-                # Usiamo la modalità corretta per performance e rendering
+                frameskip = config.FRAMESKIP_MAP.get(self.current_game_state, 6)
                 self.pyboy.tick(count=frameskip, render=config.RENDER_ENABLED)
-                render_counter += frameskip
-                if button is not None:
+                if button:
                     self.pyboy.button_release(button)
-                next_single_frame = self._get_screen_tensor()
+
                 if config.ANTI_LOOP_ENABLED:
-                    mem_state = self.memory_reader.get_current_state()
-                    self.anti_loop_buffer.add_state(
-                        mem_state.get('pos_x', 0),
-                        mem_state.get('pos_y', 0),
-                        mem_state.get('map_id', 0),
-                        action
-                    )
-                    # Track menu opening (UI-TARS inspired reasoning)
-                    start_index = self.actions.index('start')
-                    self.anti_loop_buffer.track_menu_action(
-                        action, start_index, self.frame_count
-                    )
+                    m = self.memory_reader.get_current_state()
+                    self.anti_loop_buffer.add_state(m.get('pos_x', 0), m.get('pos_y', 0), m.get('map_id', 0), action)
+                    self.anti_loop_buffer.track_menu_action(action, self.actions.index('start'), self.frame_count)
+
                 reward = self._calculate_reward()
-                perf_frame_count += 1
-                if perf_frame_count % config.PERFORMANCE_LOG_INTERVAL == 0:
-                    elapsed = time.time() - perf_start_time
-                    fps = perf_frame_count / elapsed
-                    avg_reward = np.mean(list(self.reward_history)) if self.reward_history else 0
-                    current_entropy = self.entropy_scheduler.get_entropy(self.frame_count)
-                    mem_state = self.memory_reader.get_current_state()
-                    print(f"[PERF] {fps:.1f} FPS | Frame: {self.frame_count} | "
-                          f"State: {self.current_game_state} | Avg Reward: {avg_reward:.2f}")
-                    print(f"[GAME] Badges: {mem_state.get('badges', 0)} | "
-                          f"Pokedex: {mem_state.get('pokedex_caught', 0)}/{mem_state.get('pokedex_seen', 0)} | "
-                          f"Map: {mem_state.get('map_id', 0)} | "
-                          f"Pos: ({mem_state.get('pos_x', 0)},{mem_state.get('pos_y', 0)})")
-                    print(f"[ADAPTIVE] Entropy: {current_entropy:.4f} | "
-                          f"Exploration: {'High' if current_entropy > 0.03 else 'Medium' if current_entropy > 0.01 else 'Low'}")
+                perf_frames += 1
 
-                    # Log LLM stats if available
-                    if self.llm_client.available:
-                        llm_stats = self.llm_client.get_stats()
-                        print(f"[LLM] Calls: {llm_stats['calls']} | "
-                              f"Cache: {llm_stats['cache_hit_rate']:.0f}% | "
-                              f"Avg latency: {llm_stats['avg_latency_ms']:.0f}ms")
-                    perf_start_time = time.time()
-                    perf_frame_count = 0
-                self.trajectory_buffer.add(
-                    stacked_state.cpu(), action, reward, value,
-                    log_prob, False, self.current_game_state
-                )
+                if perf_frames % config.PERFORMANCE_LOG_INTERVAL == 0:
+                    fps = perf_frames / (time.time() - perf_start)
+                    avg = np.mean(list(self.reward_history)) if self.reward_history else 0
+                    m = self.memory_reader.get_current_state()
+                    total_decisions = self.llm_decisions + self.rl_fallbacks
+                    llm_pct = (self.llm_decisions / max(total_decisions, 1)) * 100
+                    print(f"[PERF] {fps:.1f}fps Frame:{self.frame_count} Reward:{avg:.2f}")
+                    print(f"[GAME] Badges:{m.get('badges',0)} Pokemon:{m.get('pokedex_caught',0)} Map:{m.get('map_id',0)} Pos:({m.get('pos_x',0)},{m.get('pos_y',0)})")
+                    print(f"[DECISION] LLM:{self.llm_decisions} ({llm_pct:.0f}%) | RL fallback:{self.rl_fallbacks}")
+                    perf_start, perf_frames = time.time(), 0
+
+                self.trajectory_buffer.add(stacked.cpu(), action, reward, value, log_prob, False, self.current_game_state)
+
                 if self.trajectory_buffer.is_full():
-                    self.frame_stack.add(next_single_frame)
-                    next_stacked_state = self.frame_stack.get_stack()
-                    _, _, next_value = self.network_group.choose_action(
-                        next_stacked_state, self.current_game_state, deterministic=True
-                    )
+                    next_frame = self._get_screen_tensor()
+                    self.frame_stack.add(next_frame)
+                    _, _, next_val = self.network_group.choose_action(self.frame_stack.get_stack(), self.current_game_state, deterministic=True)
+                    adv, ret, _ = self.trajectory_buffer.calculate_grpo_advantages(next_val, group_by=HYPERPARAMETERS.get('GRPO_GROUP_BY', 'game_state'))
+                    is_stuck = self.anti_loop_buffer.is_stuck() if config.ANTI_LOOP_ENABLED else False
+                    entropy_coeff = self.entropy_scheduler.get_entropy(self.frame_count, stuck=is_stuck)
 
-                    # GRPO: Calculate advantages with group-relative normalization
-                    advantages, returns, group_stats = self.trajectory_buffer.calculate_grpo_advantages(
-                        next_value,
-                        group_by=HYPERPARAMETERS.get('GRPO_GROUP_BY', 'game_state')
-                    )
-
-                    # Log group statistics (DeepSeek-R1 GRPO monitoring)
-                    if HYPERPARAMETERS.get('GRPO_LOG_GROUP_STATS', True) and self.frame_count % config.PERFORMANCE_LOG_INTERVAL == 0:
-                        for state, stats in group_stats.items():
-                            if stats.get('normalized', True):
-                                logger.info(f"[GRPO] {state}: mean={stats['mean']:.3f}, "
-                                          f"std={stats['std']:.3f}, n={stats['count']}")
-
-                    current_entropy_coeff = self.entropy_scheduler.get_entropy(self.frame_count)
-                    game_states_in_buffer = set(self.trajectory_buffer.game_states)
-                    for gs in game_states_in_buffer:
-                        indices = [i for i, g in enumerate(self.trajectory_buffer.game_states) if g == gs]
-                        if len(indices) < HYPERPARAMETERS['PPO_MINIBATCH_SIZE']:
+                    for gs in set(self.trajectory_buffer.game_states):
+                        idx = [i for i, g in enumerate(self.trajectory_buffer.game_states) if g == gs]
+                        if len(idx) < HYPERPARAMETERS['PPO_MINIBATCH_SIZE']:
                             continue
-                        batch_data = {
-                            'states': [self.trajectory_buffer.states[i] for i in indices],
-                            'actions': [self.trajectory_buffer.actions[i] for i in indices],
-                            'old_log_probs': [self.trajectory_buffer.log_probs[i] for i in indices],
-                            'advantages': [advantages[i] for i in indices],
-                            'returns': [returns[i] for i in indices],
-                            'game_states': [gs] * len(indices)
+                        batch = {
+                            'states': [self.trajectory_buffer.states[i] for i in idx],
+                            'actions': [self.trajectory_buffer.actions[i] for i in idx],
+                            'old_log_probs': [self.trajectory_buffer.log_probs[i] for i in idx],
+                            'advantages': [adv[i] for i in idx],
+                            'returns': [ret[i] for i in idx],
+                            'game_states': [gs] * len(idx)
                         }
-
-                        # GRPO training (advantages pre-normalized by group)
-                        metrics = self.network_group.train_grpo(batch_data, gs, entropy_coeff=current_entropy_coeff)
+                        metrics = self.network_group.train_grpo(batch, gs, entropy_coeff=entropy_coeff)
                         self.loss_history.append(metrics['policy_loss'])
-                        # Always log training (not dependent on frame count)
-                        print(f"[GRPO] Frame {self.frame_count} [{gs}] - "
-                              f"Policy Loss: {metrics['policy_loss']:.4f}, "
-                              f"Value Loss: {metrics['value_loss']:.4f}, "
-                              f"Entropy: {metrics['entropy']:.4f}")
+                        print(f"[GRPO] {gs} Policy:{metrics['policy_loss']:.4f} Value:{metrics['value_loss']:.4f}")
 
-                    # World Model Training
                     if self.frame_count > HYPERPARAMETERS['WORLD_MODEL_START_FRAME']:
-                        if not self.world_model_enabled:
-                            logger.info("[WORLD_MODEL] Starting pre-training on replay buffer")
-                            self.world_model_enabled = True
+                        self.world_model_enabled = True
+                        wm = self._train_world_model(self.trajectory_buffer)
+                        logger.info(f"[WM] Latent:{wm['latent_loss']:.4f} Reward:{wm['reward_loss']:.4f}")
 
-                        wm_metrics = self._train_world_model(self.trajectory_buffer)
-
-                        # Log world model performance
-                        if HYPERPARAMETERS.get('GRPO_LOG_GROUP_STATS', True):
-                            logger.info(
-                                f"[WORLD_MODEL] Frame {self.frame_count} - "
-                                f"Latent: {wm_metrics['latent_loss']:.4f}, "
-                                f"Reward: {wm_metrics['reward_loss']:.4f}, "
-                                f"Done: {wm_metrics['done_loss']:.4f}"
-                            )
-
-                    # Train the MoE Router if we have world model data
-                    # This would be done in a separate training loop in a full implementation
                     self.trajectory_buffer.reset()
-                if self.frame_count - last_save_frame >= config.SAVE_FREQUENCY:
+
+                if self.frame_count - last_save >= config.SAVE_FREQUENCY:
                     self._save_checkpoint()
                     self._save_stats()
-                    last_save_frame = self.frame_count
-                    print(f"[SAVE] Checkpoint saved at frame {self.frame_count}")
+                    last_save = self.frame_count
+                    print(f"[SAVE] Frame {self.frame_count}")
+
                 self.frame_count += 1
+
         except KeyboardInterrupt:
-            print("\n[INFO] Training interrupted by user")
+            print("\nInterrupted")
         finally:
             self._save_checkpoint()
             self._save_stats()
             self.pyboy.stop()
-            print(f"[INFO] Training completed. Frames: {self.frame_count}, Total Reward: {self.total_reward:.2f}")
-def main() -> None:
+            print(f"Done. Frames:{self.frame_count} Reward:{self.total_reward:.2f}")
+
+
+def main():
     import argparse
-    parser = argparse.ArgumentParser(
-        description="Pokemon AI Agent - Reinforcement Learning con PPO",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Esempi d'uso:
-  python -m src --rom-path pokemon_red.gb
-  python -m src --rom-path "C:/Games/Pokemon Red.gb" --headless
-  python -m src --rom-path roms/pokemon.gb --speed 2 --log-level DEBUG
-        """
-    )
-    parser.add_argument(
-        '--rom-path',
-        type=str,
-        default=config.ROM_PATH,
-        help=f'Percorso al file ROM Pokemon (.gb o .gbc). Default: {config.ROM_PATH}'
-    )
-    parser.add_argument(
-        '--headless',
-        action='store_true',
-        help='Esegui in modalità headless (senza finestra, più veloce)'
-    )
-    parser.add_argument(
-        '--speed',
-        type=int,
-        default=config.EMULATION_SPEED,
-        help='Velocità emulazione (0=illimitata, 1=normale, 2=2x, ecc.). Default: 0'
-    )
-    parser.add_argument(
-        '--log-level',
-        type=str,
-        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
-        default=config.LOG_LEVEL,
-        help='Livello di logging. Default: INFO'
-    )
+    parser = argparse.ArgumentParser(description="Pokemon AI Agent")
+    parser.add_argument('--rom-path', type=str, default=config.ROM_PATH)
+    parser.add_argument('--headless', action='store_true')
+    parser.add_argument('--speed', type=int, default=config.EMULATION_SPEED)
+    parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], default=config.LOG_LEVEL)
     args = parser.parse_args()
-    rom_path = args.rom_path
-    headless = args.headless if args.headless else config.HEADLESS
+
     if args.speed != config.EMULATION_SPEED:
         config.EMULATION_SPEED = args.speed
     if args.log_level != config.LOG_LEVEL:
-        config.LOG_LEVEL = args.log_level
         logging.getLogger().setLevel(getattr(logging, args.log_level))
-    if not os.path.exists(rom_path):
-        print(f"[ERROR] File ROM non trovato: {rom_path}")
-        print(f"\nSpecifica il percorso corretto con --rom-path:")
-        print(f"  python -m src --rom-path percorso/al/tuo/file.gb")
+
+    rom = args.rom_path
+    if not os.path.exists(rom):
+        print(f"ROM not found: {rom}")
         return
-    if not (rom_path.lower().endswith('.gbc') or rom_path.lower().endswith('.gb')):
-        print(f"[ERROR] Il file deve essere .gb o .gbc: {rom_path}")
+    if not rom.lower().endswith(('.gb', '.gbc')):
+        print(f"Invalid ROM extension: {rom}")
         return
-    if os.path.getsize(rom_path) == 0:
-        print(f"[ERROR] Il file ROM è vuoto: {rom_path}")
-        return
-    print(f"[INFO] ROM: {rom_path}")
-    print(f"[INFO] Modalità: {'headless' if headless else 'finestra SDL2'}")
-    print(f"[INFO] Velocità: {'illimitata' if args.speed == 0 else f'{args.speed}x'}")
-    print(f"[INFO] Device: {config.DEVICE}")
-    print(f"[INFO] Architettura: DeepSeek-VL2 (arXiv:2412.10302)")
-    print()
+
+    print(f"ROM: {rom} | {'Headless' if args.headless else 'SDL2'} | Speed: {args.speed or 'unlimited'}")
     try:
-        agent = PokemonAIAgent(rom_path, headless=headless)
-        agent.start_training()
-    except PokemonAIError as e:
-        logger.error(f"Pokemon AI Error: {e}")
+        PokemonAIAgent(rom, headless=args.headless or config.HEADLESS).start_training()
+    except (PokemonAIError, Exception) as e:
+        logger.error(f"Error: {e}")
         import traceback
         traceback.print_exc()
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        import traceback
-        traceback.print_exc()
+
+
 if __name__ == "__main__":
     main()
