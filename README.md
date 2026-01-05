@@ -45,18 +45,28 @@ Agente AI completamente autonomo che impara a giocare Pokemon Rosso/Blu dall'ini
                     +--------+----------+
                              |
                              v
-+----------+    +------------+------------+    +-----------+
-| PyBoy    | -> | PPO Network             | -> | Actions   |
-| Emulator |    | (ExplorationPPO/        |    | (A/B/D-pad|
-| (screen) |    |  BattlePPO/MenuPPO)     |    |  etc.)    |
-+----------+    +------------+------------+    +-----------+
++----------+    +-------------------------+    +-----------+
+| PyBoy    | -> |    PPO Network        | -> | Actions   |
+| Emulator |    | (ExplorationPPO/      |    | (A/B/D-pad|
+| (screen) |    |  BattlePPO/MenuPPO)   |    |  etc.)    |
++----------+    +-------------------------+    +-----------+
                              ^
                              |
-                    +--------+----------+
-                    |    World Model    |
-                    | (Imagination)     |
-                    +-------------------+
+                     +-------+-------+
+                     |   Qwen3-VL    |
+                     |   (Strategic  |
+                     |    Reasoning) |
+                     +---------------+
+
+### Sistema di Reward Gerarchico
+
+Formula matematica per bilanciare obiettivi a breve e lungo termine:
+
 ```
+R_totale = α * R_primario + β * R_secondario + γ * R_intrinseco + R_penalità
+```
+
+Dove α, β, γ sono pesi adattivi che si aggiustano in base ai progressi.
 
 ### LLM Integration (Novita V5.0)
 

@@ -606,6 +606,67 @@ ONE word response."""
 
         return biased
 
+    def get_subgoal_analysis(self, prompt: str, screen_array: Optional[np.ndarray] = None) -> str:
+        """
+        Get LLM analysis for subgoal identification.
+
+        Args:
+            prompt: The prompt to send to the LLM for subgoal analysis
+            screen_array: Optional screenshot for multimodal analysis
+
+        Returns:
+            LLM response as string
+        """
+        if not self.available:
+            return ""
+
+        try:
+            # Encode image if available
+            image_b64 = None
+            if screen_array is not None and self.config.use_vision:
+                image_b64 = self._encode_image(screen_array)
+
+            # Make the request directly (blocking for this specific call)
+            if image_b64 is not None:
+                payload = {
+                    "model": self.config.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "images": [image_b64],
+                    "options": {
+                        "temperature": self.config.temperature,
+                        "num_predict": self.config.max_tokens,
+                    }
+                }
+            else:
+                payload = {
+                    "model": self.config.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": self.config.temperature,
+                        "num_predict": self.config.max_tokens,
+                    }
+                }
+
+            response = requests.post(
+                f"{self.config.host}/api/generate",
+                json=payload,
+                timeout=self.config.timeout
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                self.stats['calls'] += 1
+                return result.get('response', '').strip()
+            else:
+                logger.debug(f"[LLM] Subgoal analysis failed: {response.status_code}")
+                return ""
+
+        except Exception as e:
+            logger.debug(f"[LLM] Subgoal analysis error: {e}")
+            return ""
+
     def get_stats(self) -> Dict[str, Any]:
         """Get usage statistics."""
         avg_latency = (

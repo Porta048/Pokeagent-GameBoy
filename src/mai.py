@@ -30,18 +30,19 @@ if __package__ is None or __package__ == '':
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
     __package__ = "src"
-from .config import config
-from .memory_reader import GameMemoryReader
-from .moe_router import GameStateMoERouter
-from .utils import AsyncSaver, FrameStack, ImageCache
-from .hyperparameters import HYPERPARAMETERS
-from .errors import PokemonAIError, ROMLoadError
-from .anti_loop import AdaptiveEntropyScheduler, AntiLoopMemoryBuffer
-from .action_filter import ContextAwareActionFilter
-from .trajectory_buffer import TrajectoryBuffer
-from .models import PPONetworkGroup
-from .simple_world_model import SimpleWorldModel, compute_world_model_loss
-from .llm_integration import OllamaLLMClient, LLMConfig
+from .cfg import config
+from .mem import GameMemoryReader
+from .moe import GameStateMoERouter
+from .uti import AsyncSaver, FrameStack, ImageCache
+from .hyp import HYPERPARAMETERS
+from .err import PokemonAIError, ROMLoadError
+from .ant import AdaptiveEntropyScheduler, AntiLoopMemoryBuffer
+from .act import ContextAwareActionFilter
+from .trj import TrajectoryBuffer
+from .mod import PPONetworkGroup
+from .swm import SimpleWorldModel, compute_world_model_loss
+from .llm import OllamaLLMClient, LLMConfig
+from .hrs import HierarchicalRewardCalculator
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -133,6 +134,9 @@ class PokemonAIAgent:
             print(f"[LLM] {config.LLM_MODEL} ready for strategic reasoning")
         else:
             print(f"[LLM] Disabled or unavailable - using pure RL")
+
+        # Initialize hierarchical reward calculator with LLM integration
+        self.hierarchical_reward_calculator = HierarchicalRewardCalculator(llm_client=self.llm_client if self.llm_client.available else None)
 
         self.stats = self._load_stats()
         self.episode_count = 0
@@ -287,26 +291,39 @@ class PokemonAIAgent:
         reward = 0
         try:
             memory_state = self.memory_reader.get_current_state()
-            memory_reward = self.memory_reader.calculate_event_rewards(memory_state)
-            reward += memory_reward
+
+            # Get the previous state for comparison
+            previous_memory_state = self.memory_reader.previous_state
+
+            # Get loop penalty from anti-loop system (still used in hierarchical system)
+            loop_penalty = 0.0
             if config.ANTI_LOOP_ENABLED:
                 loop_penalty = self.anti_loop_buffer.calculate_loop_penalty()
-                if loop_penalty < 0:
-                    reward += loop_penalty
-                    if self.frame_count % 5000 == 0:
-                        print(f"[ANTI-LOOP] Loop detected! Penalty: {loop_penalty:.2f}")
-                exploration_bonus = self.anti_loop_buffer.get_exploration_bonus()
-                if exploration_bonus > 0:
-                    reward += exploration_bonus
-                # Apply menu spam penalty (VAPO-inspired value-based reasoning)
-                menu_penalty = self.anti_loop_buffer.get_menu_spam_penalty(self.frame_count)
-                if menu_penalty < 0:
-                    reward += menu_penalty
+                if loop_penalty < 0 and self.frame_count % 5000 == 0:
+                    print(f"[ANTI-LOOP] Loop detected! Penalty: {loop_penalty:.2f}")
+
+            # Calculate hierarchical reward using the new system
+            total_reward, reward_details = self.hierarchical_reward_calculator.calculate_total_reward(
+                current_state=memory_state,
+                previous_state=previous_memory_state,
+                loop_penalty=loop_penalty,
+                screen_array=self.last_screen_array
+            )
+
+            reward = total_reward
+
+            # Print reward details if there are any
+            if reward_details:
+                print(f"[HIERARCHICAL_REWARD] {reward_details} = {reward:.4f}")
+
+            # Update reward history and total
             self.reward_history.append(reward)
             self.total_reward += reward
             return reward
         except Exception as e:
-            logger.error(f"Error calculating reward: {str(e)}")
+            logger.error(f"Error calculating hierarchical reward: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return -1.0
 
     def _train_world_model(self, trajectory_buffer) -> Dict[str, float]:

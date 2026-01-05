@@ -1,4 +1,4 @@
-from .config import config
+from .cfg import config
 HYPERPARAMETERS = {
     'MOVEMENT_THRESHOLD': 0.02,
     'BLOCKED_THRESHOLD': 50,
