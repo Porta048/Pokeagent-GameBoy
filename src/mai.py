@@ -12,12 +12,18 @@ import torch.nn as nn
 
 try:
     from pyboy import PyBoy
-    import keyboard
     from PIL import Image
     DEPS_AVAILABLE = True
 except ImportError as e:
     DEPS_AVAILABLE = False
     print(f"Missing dependencies: {e}")
+
+# keyboard library requires admin on macOS, make it optional
+try:
+    import keyboard
+    KEYBOARD_AVAILABLE = True
+except (ImportError, OSError):
+    KEYBOARD_AVAILABLE = False
 
 if __package__ is None or __package__ == '':
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -310,18 +316,27 @@ class PokemonAIAgent:
         perf_start, perf_frames = time.time(), 0
         self.frame_stack.reset(self._get_screen_tensor())
 
+        def _safe_key_pressed(key: str) -> bool:
+            """Check key press safely, handling macOS permission issues."""
+            if not KEYBOARD_AVAILABLE:
+                return False
+            try:
+                return keyboard.is_pressed(key)
+            except (OSError, ValueError):
+                return False
+
         try:
             while True:
-                if keyboard.is_pressed('escape'):
+                if _safe_key_pressed('escape') or _safe_key_pressed('esc'):
                     break
-                if keyboard.is_pressed('space'):
+                if _safe_key_pressed('space'):
                     paused = not paused
                     time.sleep(0.3)
-                if keyboard.is_pressed('+') or keyboard.is_pressed('='):
+                if _safe_key_pressed('='):
                     config.EMULATION_SPEED = min(config.EMULATION_SPEED + 1, 10)
                     self.pyboy.set_emulation_speed(config.EMULATION_SPEED)
                     time.sleep(0.2)
-                if keyboard.is_pressed('-'):
+                if _safe_key_pressed('-'):
                     config.EMULATION_SPEED = max(config.EMULATION_SPEED - 1, 0)
                     self.pyboy.set_emulation_speed(config.EMULATION_SPEED)
                     time.sleep(0.2)
@@ -345,7 +360,6 @@ class PokemonAIAgent:
                     action = llm_action
                     log_prob = 0.0
                     _, _, value = self.network_group.choose_action(stacked, self.current_game_state, deterministic=True)
-                    value = value
                     self.llm_decisions += 1
                 else:
                     # RL network as FALLBACK
@@ -379,14 +393,8 @@ class PokemonAIAgent:
                 perf_frames += 1
 
                 if perf_frames % config.PERFORMANCE_LOG_INTERVAL == 0:
-                    fps = perf_frames / (time.time() - perf_start)
-                    avg = np.mean(list(self.reward_history)) if self.reward_history else 0
                     m = self.memory_reader.get_current_state()
-                    total_decisions = self.llm_decisions + self.rl_fallbacks
-                    llm_pct = (self.llm_decisions / max(total_decisions, 1)) * 100
-                    print(f"[PERF] {fps:.1f}fps Frame:{self.frame_count} Reward:{avg:.2f}")
-                    print(f"[GAME] Badges:{m.get('badges',0)} Pokemon:{m.get('pokedex_caught',0)} Map:{m.get('map_id',0)} Pos:({m.get('pos_x',0)},{m.get('pos_y',0)})")
-                    print(f"[DECISION] LLM:{self.llm_decisions} ({llm_pct:.0f}%) | RL fallback:{self.rl_fallbacks}")
+                    print(f"Frame:{self.frame_count} | Badges:{m.get('badges',0)} Pokemon:{m.get('pokedex_caught',0)} Map:{m.get('map_id',0)}")
                     perf_start, perf_frames = time.time(), 0
 
                 self.trajectory_buffer.add(stacked.cpu(), action, reward, value, log_prob, False, self.current_game_state)
@@ -413,12 +421,10 @@ class PokemonAIAgent:
                         }
                         metrics = self.network_group.train_grpo(batch, gs, entropy_coeff=entropy_coeff)
                         self.loss_history.append(metrics['policy_loss'])
-                        print(f"[GRPO] {gs} Policy:{metrics['policy_loss']:.4f} Value:{metrics['value_loss']:.4f}")
 
                     if self.frame_count > HYPERPARAMETERS['WORLD_MODEL_START_FRAME']:
                         self.world_model_enabled = True
-                        wm = self._train_world_model(self.trajectory_buffer)
-                        logger.info(f"[WM] Latent:{wm['latent_loss']:.4f} Reward:{wm['reward_loss']:.4f}")
+                        self._train_world_model(self.trajectory_buffer)
 
                     self.trajectory_buffer.reset()
 

@@ -5,9 +5,9 @@ from typing import Dict, List, Optional, Union
 import torch
 @dataclass
 class Config:
-    ROM_PATH: str = r"C:\Users\chatg\Documents\GitHub\Pokemon Red.gb"
+    ROM_PATH: str = "roms/Pokemon Red.gb"
     HEADLESS: bool = False
-    EMULATION_SPEED: int = 0  # Velocità illimitata
+    EMULATION_SPEED: int = 1  # Velocità normale (1x)
     RENDER_ENABLED: bool = True
     RENDER_EVERY_N_FRAMES: int = 2  # Renderizza ogni 2 frame
     DEVICE: torch.device = field(default_factory=lambda: torch.device("cuda" if torch.cuda.is_available() else "cpu"))
@@ -17,7 +17,7 @@ class Config:
     GAME_STATE_FILENAME: str = "game_state.state"
     FRAME_STACK_SIZE: int = 4
     SAVE_FREQUENCY: int = 10000
-    PERFORMANCE_LOG_INTERVAL: int = 1000
+    PERFORMANCE_LOG_INTERVAL: int = 10000  # Log ogni 10000 frame (meno spam)
     ACTIONS: List[Optional[str]] = field(default_factory=lambda: [
         None,      
         'up',      
@@ -44,7 +44,7 @@ class Config:
     LOG_LEVEL: str = "INFO"
 
     # LLM Integration (Ollama + qwen3-vl:2b)
-    LLM_ENABLED: bool = True
+    LLM_ENABLED: bool = False  # Disabilitato per test
     LLM_HOST: str = "http://localhost:11434"
     LLM_MODEL: str = "qwen3-vl:2b"
     LLM_TEMPERATURE: float = 0.3  # Lower temperature for more consistent responses

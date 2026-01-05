@@ -13,8 +13,9 @@ class GameMemoryReader:
         'MAP_ID': 0xD35E,
         'POS_X': 0xD361,
         'POS_Y': 0xD362,
-        'EVENT_FLAGS': (0xD747, 0xD886),  
-        'TRAINER_FLAGS': (0xD5A0, 0xD5F7)  
+        'EVENT_FLAGS': (0xD747, 0xD886),
+        'TRAINER_FLAGS': (0xD5A0, 0xD5F7),
+        'BATTLE_TYPE': 0xD057,  # 0 = no battle, 1 = wild, 2 = trainer
     }
     def __init__(self, pyboy):
         self.pyboy = pyboy
@@ -35,7 +36,8 @@ class GameMemoryReader:
             team_levels = [mem(addr[0]) for addr in self.MEMORY_ADDRESSES['TEAM_LEVELS']]
             hp_team = [mem(addr[0]) * 256 + mem(addr[1]) for addr in self.MEMORY_ADDRESSES['HP_TEAM']]
             hp_max_team = [mem(addr[0]) * 256 + mem(addr[1]) for addr in self.MEMORY_ADDRESSES['HP_MAX_TEAM']]
-            in_battle = any(hp > 0 for hp in hp_team[:3])
+            battle_type = mem(self.MEMORY_ADDRESSES['BATTLE_TYPE'])
+            in_battle = battle_type != 0  # 0 = no battle, 1 = wild, 2 = trainer
             event_flags = set()
             for addr in range(self.MEMORY_ADDRESSES['EVENT_FLAGS'][0], self.MEMORY_ADDRESSES['EVENT_FLAGS'][1] + 1):
                 byte_val = mem(addr)

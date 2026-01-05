@@ -164,14 +164,29 @@ pip install -e .
 
 # Per supporto GPU (NVIDIA)
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# Verifica che tutte le dipendenze siano installate correttamente
+python check_dependencies.py
 ```
 
 ### Esecuzione dell'Agente
 
 **IMPORTANTE**: Devi fornire il tuo file ROM Pokemon (`.gb` o `.gbc`).
 
+Per prima cosa, posiziona il tuo file ROM Pokemon nella directory `roms/`:
+
 ```bash
-# Specifica il percorso alla tua ROM
+# Sposta il tuo file ROM nella directory roms/
+mv Pokemon\ Red.gb roms/
+```
+
+Il percorso predefinito è `roms/Pokemon Red.gb`, ma puoi specificare un percorso personalizzato:
+
+```bash
+# Esecuzione con il percorso predefinito
+python -m src
+
+# Specifica un percorso personalizzato per la ROM
 python -m src --rom-path pokemon_red.gb
 
 # Con opzioni aggiuntive
@@ -192,6 +207,11 @@ Durante il training:
 - `SPACE` - Pausa/Riprendi training
 - `+` / `=` - Aumenta velocita emulazione
 - `-` / `_` - Diminuisci velocita emulazione
+
+**Nota per macOS**: A causa di limitazioni del modulo `keyboard`, potrebbero verificarsi errori di permessi o problemi con alcuni tasti. In tal caso:
+- Esegui con l'opzione `--headless` per evitare problemi di controllo da tastiera
+- Oppure esegui con `--speed 1` per limitare la velocità e ridurre l'uso dei controlli da tastiera
+- Se necessario, puoi anche disabilitare completamente i controlli da tastiera modificando il codice sorgente
 
 ## Configurazione
 
@@ -337,6 +357,26 @@ LLM_MIN_INTERVAL_MS: int = 3000  # Ogni 3 secondi
 # Oppure disabilita vision
 LLM_USE_VISION: bool = False
 ```
+
+### Problemi con il modulo Keyboard (macOS)
+
+**Problema**: Errori tipo `OSError: Error 13 - Must be run as administrator` o `ValueError: Key '+' is not mapped to any known key`
+
+Questo e' un problema comune su macOS con il modulo `keyboard`. Soluzioni:
+
+1. **Esegui in modalita headless** (consigliato):
+   ```bash
+   python -m src --headless
+   ```
+
+2. **Esegui con velocita limitata**:
+   ```bash
+   python -m src --speed 1
+   ```
+
+3. **Se hai bisogno di accesso completo da tastiera su macOS**, concedi i permessi in:
+   - Impostazioni di Sistema > Privacy e Sicurezza > Accessibilita'
+   - Aggiungi il terminale o l'applicazione che stai usando
 
 ### Checkpoint incompatibile
 

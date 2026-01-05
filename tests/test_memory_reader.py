@@ -2,7 +2,7 @@
 import pytest
 from unittest.mock import Mock, MagicMock
 
-from src.memory_reader import GameMemoryReader
+from src.mem import GameMemoryReader
 
 
 class TestGameMemoryReader:

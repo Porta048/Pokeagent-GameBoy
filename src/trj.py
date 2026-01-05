@@ -140,8 +140,8 @@ class TrajectoryBuffer:
                 advantages = raw_advantages
                 group_stats = {}
 
-        # Calculate returns
-        returns = [adv + val for adv, val in zip(advantages, self.values)]
+        # Calculate returns using RAW advantages (before normalization)
+        returns = [adv + val for adv, val in zip(raw_advantages, self.values)]
 
         return advantages, returns, group_stats
     def get_batch(self, advantages, returns):
