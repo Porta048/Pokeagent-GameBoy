@@ -1,6 +1,7 @@
 import logging
 import base64
 import io
+import re
 import time
 import threading
 from dataclasses import dataclass
@@ -42,6 +43,7 @@ class LLMConfig:
     use_for_battle: bool = True
     use_for_menu: bool = False
     fallback_on_error: bool = True
+    retry_attempts: int = 2
 
 
 class LLMRateLimiter:
@@ -134,45 +136,86 @@ class AsyncLLMWorker:
         while self._running:
             try:
                 prompt, image_b64 = self.request_queue.get(timeout=0.1)
+                logger.info("[LLM] Processing request...")
                 response = self._make_request(prompt, image_b64)
                 if response:
                     with self._lock:
                         self.latest_response = response
+                    logger.info(f"[LLM] Response received: {response.get('raw_response', '')[:50]}")
+                else:
+                    logger.warning("[LLM] Request returned no response")
             except Empty:
                 continue
             except Exception as e:
-                logger.debug(f"[LLM] Worker error: {e}")
+                logger.warning(f"[LLM] Worker error: {e}")
 
     def _make_request(self, prompt: str, image_b64: Optional[str]) -> Optional[Dict]:
-        try:
-            payload = {
-                "model": self.config.model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": self.config.temperature,
-                    "num_predict": self.config.max_tokens,
+        # Try multiple times if configured
+        for attempt in range(self.config.retry_attempts + 1):
+            try:
+                payload = {
+                    "model": self.config.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": self.config.temperature,
+                        "num_predict": self.config.max_tokens,
+                    }
                 }
-            }
-            if image_b64:
-                payload["images"] = [image_b64]
+                if image_b64:
+                    payload["images"] = [image_b64]
 
-            response = requests.post(
-                f"{self.config.host}/api/generate",
-                json=payload,
-                timeout=self.config.timeout
-            )
-            if response.status_code != 200:
+                response = requests.post(
+                    f"{self.config.host}/api/generate",
+                    json=payload,
+                    timeout=self.config.timeout
+                )
+                if response.status_code != 200:
+                    logger.warning(f"[LLM] Request failed with status {response.status_code} (attempt {attempt + 1}/{self.config.retry_attempts + 1}): {response.text}")
+                    if attempt < self.config.retry_attempts:
+                        time.sleep(0.5)  # Brief delay before retry
+                        continue
+                    return None
+
+                result = response.json()
+                raw = result.get('response', '').strip()
+
+                # If response is empty, try to extract from thinking field
+                if not raw and 'thinking' in result:
+                    thinking = result.get('thinking', '')
+                    # Look for action words in the thinking text
+                    possible_actions = ['ATTACK', 'SWITCH', 'ITEM', 'RUN', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'CONFIRM', 'CANCEL', 'INTERACT']
+                    # Find all action words in the thinking text
+                    matches = re.findall(r'\b(' + '|'.join(possible_actions) + r')\b', thinking.upper())
+                    if matches:
+                        raw = matches[-1]  # Take the last action mentioned
+                        logger.debug(f"[LLM] Extracted action '{raw}' from thinking field")
+
+                if not raw:
+                    logger.warning(f"[LLM] Empty response from model (attempt {attempt + 1}/{self.config.retry_attempts + 1}). Full result: {result}")
+                    if attempt < self.config.retry_attempts:
+                        time.sleep(0.5)  # Brief delay before retry
+                        continue
+                    return None
+
+                # Success case
+                logger.debug(f"[LLM] Request succeeded on attempt {attempt + 1}")
+                return {
+                    'raw_response': raw,
+                    'timestamp': time.time()
+                }
+            except requests.exceptions.ConnectionError:
+                logger.error(f"[LLM] Cannot connect to Ollama at {self.config.host} (attempt {attempt + 1}/{self.config.retry_attempts + 1}). Is Ollama running?")
+                if attempt < self.config.retry_attempts:
+                    time.sleep(1.0)  # Longer delay for connection issues
+                    continue
                 return None
-
-            result = response.json()
-            return {
-                'raw_response': result.get('response', '').strip(),
-                'timestamp': time.time()
-            }
-        except Exception as e:
-            logger.debug(f"[LLM] Request failed: {e}")
-            return None
+            except Exception as e:
+                logger.warning(f"[LLM] Request failed (attempt {attempt + 1}/{self.config.retry_attempts + 1}): {e}")
+                if attempt < self.config.retry_attempts:
+                    time.sleep(0.5)  # Brief delay before retry
+                    continue
+                return None
 
 
 class OllamaLLMClient:
@@ -204,16 +247,32 @@ class OllamaLLMClient:
         self._last_response_time: float = 0
 
     def _check_availability(self) -> bool:
-        if not REQUESTS_AVAILABLE or not self.config.enabled:
+        if not REQUESTS_AVAILABLE:
+            logger.warning("[LLM] requests library not available")
+            return False
+        if not self.config.enabled:
+            logger.info("[LLM] disabled in config")
             return False
         try:
             response = requests.get(f"{self.config.host}/api/tags", timeout=2.0)
             if response.status_code != 200:
+                logger.error(f"[LLM] Ollama returned status {response.status_code}. Is Ollama running at {self.config.host}?")
                 return False
             models = response.json().get('models', [])
             model_base = self.config.model.split(':')[0]
-            return any(model_base in m.get('name', '') for m in models)
-        except Exception:
+            available_names = [m.get('name', '') for m in models]
+            if not any(model_base in name for name in available_names):
+                logger.error(f"[LLM] Model '{self.config.model}' not found. Available models: {[m.get('name', '') for m in models]}")
+                logger.error(f"[LLM] Please pull the required model with: ollama pull {self.config.model}")
+                return False
+            logger.info(f"[LLM] Connected to Ollama, model: {self.config.model}")
+            return True
+        except requests.exceptions.ConnectionError:
+            logger.error(f"[LLM] Cannot connect to Ollama at {self.config.host}. Is Ollama running?")
+            logger.error("[LLM] To fix this: 1) Install Ollama (ollama.com), 2) Run 'ollama serve', 3) Run 'ollama pull qwen3-vl:2b'")
+            return False
+        except Exception as e:
+            logger.error(f"[LLM] Availability check failed: {e}")
             return False
 
     def _encode_image(self, screen_array: np.ndarray) -> Optional[str]:
@@ -294,17 +353,7 @@ Your answer:"""
         if not self.available:
             return None
 
-        if not self.rate_limiter.can_call():
-            if self._last_parsed_response and self._last_parsed_response.get('suggested_action'):
-                return self._action_to_index(self._last_parsed_response['suggested_action'])
-            return None
-
-        prompt, image_b64 = self._build_prompt(game_state, memory_state, screen_array, action_history)
-        self._async_worker.submit_request(prompt, image_b64)
-        self.rate_limiter.record_call()
-        self.stats['async_requests'] += 1
-        self._last_game_state = game_state
-
+        # Always check for new responses from async worker
         worker_response = self._async_worker.get_latest_response()
         if worker_response and worker_response.get('raw_response'):
             response_time = worker_response.get('timestamp', 0)
@@ -312,14 +361,37 @@ Your answer:"""
                 self._last_response_time = response_time
                 parsed = self._parse_response(worker_response['raw_response'], game_state)
                 self._last_parsed_response = parsed
+                self._last_game_state = game_state
                 self.stats['calls'] += 1
+                logger.debug(f"[LLM] New response: {parsed.get('suggested_action')}")
+        elif worker_response is not None and not worker_response.get('raw_response'):
+            # Log when we get empty responses to help with debugging
+            logger.warning(f"[LLM] Received empty response from worker")
 
-                action = parsed.get('suggested_action')
-                if action:
-                    return self._action_to_index(action)
+        # Submit new request if rate limiter allows
+        if self.rate_limiter.can_call():
+            prompt, image_b64 = self._build_prompt(game_state, memory_state, screen_array, action_history)
+            self._async_worker.submit_request(prompt, image_b64)
+            self.rate_limiter.record_call()
+            self.stats['async_requests'] += 1
+        else:
+            # Log when rate limiter prevents requests to help with debugging
+            logger.debug(f"[LLM] Rate limited - not submitting new request")
 
+        # Use cached response if available - reuse for up to 10 seconds to account for LLM processing time
+        # Vision LLM calls are slow (~5-10s), so we reuse responses aggressively
         if self._last_parsed_response and self._last_parsed_response.get('suggested_action'):
-            return self._action_to_index(self._last_parsed_response['suggested_action'])
+            age = time.time() - self._last_response_time
+            if age < 10.0:  # Reuse response for up to 10 seconds (increased from 5)
+                return self._action_to_index(self._last_parsed_response['suggested_action'])
+
+        # If we have a pending request that hasn't returned yet, consider returning the same action
+        # to avoid falling back to RL too quickly
+        if self._last_parsed_response and self._last_parsed_response.get('suggested_action'):
+            age = time.time() - self._last_response_time
+            if age < 3.0:  # For first 3 seconds after last response, reuse the action even if expired
+                logger.debug(f"[LLM] Reusing last action due to recent activity (age: {age:.1f}s)")
+                return self._action_to_index(self._last_parsed_response['suggested_action'])
 
         return None
 

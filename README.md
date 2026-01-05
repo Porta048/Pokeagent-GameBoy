@@ -1,4 +1,4 @@
-# Pokemon AI Agent - Versione 5.0
+# Pokemon AI Agent - Versione 5.1
 
 [![CI](https://github.com/yourusername/Pokeagent-GameBoy/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/Pokeagent-GameBoy/actions/workflows/ci.yml)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
@@ -8,15 +8,16 @@
 
 Agente AI autonomo che gioca a Pokemon Rosso/Blu usando **GRPO** (Group Relative Policy Optimization) con **World Model** e **integrazione LLM** per decision-making strategico.
 
-> **VERSIONE 5.0 - GRPO + WORLD MODEL + LLM** (Gennaio 2026):
+> **VERSIONE 5.1 - GRPO + WORLD MODEL + LLM** (Gennaio 2026):
 >
 > - **LLM Integration**: Qwen3-VL per reasoning strategico (async, non-blocking)
 > - **Vision-Language Model**: Screenshot analysis in tempo reale
 > - **GRPO**: DeepSeek-R1 group-relative advantage normalization
 > - **World Model**: Dreamer-style imagination training
 > - **DeepSeek-VL2 Vision**: PixelShuffleAdaptor + Multi-head Latent Attention
-> - **3.2M parametri**: Exploration (454K) + Battle (2.5M) + Menu (257K)
+> - **1.76M parametri**: ExplorationPPO + BattlePPO + MenuPPO
 > - **Anti-loop system**: Menu spam detection + temporal reasoning
+> - **Graceful checkpoint handling**: Migrazione automatica tra architetture
 
 <p align="center">
   <a href="Screenshot%202025-09-13%20221934.png">
@@ -50,17 +51,25 @@ Dove i pesi adattivi si aggiornano dinamicamente secondo le seguenti formule:
 
 Dove: α₀=0.3, β₀=0.4, γ₀=0.3, ρ_progressi=0.1, ρ_stallo=0.5, ρ_esplorazione=0.2, τ=300s.
 
-### LLM Integration (Novita V5.0)
+### LLM Integration (Novita V5.1)
 
-L'LLM funziona come **strategic advisor** che fornisce bias alle azioni:
+L'LLM e' il **primary decision maker** - la rete RL e' usata come fallback:
+
+```text
+Decisione = LLM disponibile? -> Usa azione LLM
+                            -> Altrimenti: Usa rete RL (fallback)
+```
+
+**Cambiamento da V5.0**: Prima l'LLM era un "soft bias advisor" che aggiungeva un boost ai logit della policy. Ora l'LLM decide direttamente l'azione, con la rete RL che interviene solo quando l'LLM non risponde in tempo.
 
 | Componente | Descrizione | Beneficio |
-|------------|-------------|-----------|
+| ---------- | ----------- | --------- |
 | **Async Worker** | Thread separato per chiamate LLM | Zero lag nel game loop |
 | **Vision Analysis** | Screenshot encoding base64 | Contesto visivo per decisioni |
 | **Rate Limiting** | Max 60 chiamate/min | Bilanciamento latenza/frequenza |
 | **Response Cache** | TTL 15s | Riduce chiamate ripetitive |
-| **Soft Bias** | Boost logit azione suggerita | Non override policy, solo guida |
+| **Primary Control** | LLM decide azione direttamente | Decisioni strategiche immediate |
+| **RL Fallback** | Rete PPO quando LLM non risponde | Continuita' senza interruzioni |
 
 **Configurazione LLM** ([src/config.py](src/config.py)):
 
@@ -69,13 +78,37 @@ L'LLM funziona come **strategic advisor** che fornisce bias alle azioni:
 LLM_ENABLED: bool = True
 LLM_HOST: str = "http://localhost:11434"
 LLM_MODEL: str = "qwen3-vl:2b"
-LLM_TIMEOUT: float = 10.0  # Async non blocca
-LLM_MIN_INTERVAL_MS: int = 1000  # 1 chiamata/sec
+LLM_TEMPERATURE: float = 0.3  # Temperature più bassa per risposte consistenti
+LLM_TIMEOUT: float = 15.0  # Tempo aumentato per elaborazione vision
+LLM_MIN_INTERVAL_MS: int = 2000  # Intervallo aumentato a 2 secondi
+LLM_MAX_CALLS_PER_MINUTE: int = 30  # Chiamate ridotte per evitare sovraccarico
+LLM_CACHE_TTL_SECONDS: int = 20  # Cache aumentata per riutilizzo risposte
 LLM_USE_VISION: bool = True  # Screenshot analysis
 LLM_USE_FOR_EXPLORATION: bool = True
 LLM_USE_FOR_BATTLE: bool = True
 LLM_USE_FOR_MENU: bool = False
+LLM_RETRY_ATTEMPTS: int = 2  # Numero di tentativi per richieste fallite
 ```
+
+### Setup LLM
+
+Per utilizzare correttamente l'integrazione LLM, segui questi passaggi:
+
+1. **Installa Ollama**: Visita [ollama.com](https://ollama.com/) e scarica Ollama per il tuo sistema
+2. **Avvia il servizio Ollama**:
+   ```bash
+   ollama serve
+   ```
+3. **Scarica il modello richiesto**:
+   ```bash
+   ollama pull qwen3-vl:2b
+   ```
+4. **Testa la connessione**:
+   ```bash
+   python test_llm_connection.py
+   ```
+
+Se il LLM non e' disponibile, il sistema utilizzera automaticamente la rete RL come fallback, garantendo che l'agente continui a funzionare anche senza LLM.
 
 ### Vision Encoder
 
@@ -97,12 +130,12 @@ Value Head  -> stima valore
 ### Tre Reti Specializzate
 
 | Rete | Parametri | Embed Dim | MLA Layers | Uso |
-|------|-----------|-----------|------------|-----|
-| **ExplorationPPO** | 454K | 192 | 1 | Navigazione veloce |
-| **BattlePPO** | 2.5M | 320 | 3 | Strategie complesse |
-| **MenuPPO** | 257K | 128 | 1 | UI semplici |
+| ---- | --------- | --------- | ---------- | --- |
+| **ExplorationPPO** | ~500K | 192 | 1 | Navigazione veloce |
+| **BattlePPO** | ~900K | 320 | 3 | Strategie complesse |
+| **MenuPPO** | ~350K | 128 | 1 | UI semplici |
 
-**Totale: 3.2M parametri**
+Totale: 1.76M parametri
 
 ## Avvio Rapido
 
@@ -210,10 +243,11 @@ LLM_USE_VISION: bool = False
 - **Entropy scheduling** adattivo
 
 ### LLM Integration
+
+- **Primary decision maker**: LLM decide le azioni, RL e' fallback
 - **Async non-blocking**: Thread separato per chiamate HTTP
 - **Vision analysis**: Screenshot encoding per contesto visivo
-- **Strategic reasoning**: Suggerimenti per esplorazione e battaglia
-- **Soft bias**: Guida policy senza override completo
+- **Strategic reasoning**: Analisi situazione per esplorazione e battaglia
 - **Rate limiting**: Bilanciamento tra frequenza e latenza
 - **Caching**: Riuso risposte per stati simili
 
@@ -236,17 +270,16 @@ LLM_USE_VISION: bool = False
 
 ## Output Esempio
 
-```
+```text
 [INFO] ROM: C:\Games\Pokemon Red.gb
 [INFO] Emulation speed: unlimited
-[LLM] Ollama ready with qwen3-vl:2b
-[LLM] qwen3-vl:2b ready for strategic reasoning
+[LLM] Connected to Ollama, model: qwen3-vl:2b
+[LLM] Ready
 [LOAD] Checkpoint loaded: episode 0, frame 131022
 
-[PERF] 1524.2 FPS | Frame: 135000 | State: exploring | Avg Reward: 18.32
-[GAME] Badges: 1 | Pokedex: 8/15 | Map: 54 | Pos: (12,8)
-[ADAPTIVE] Entropy: 0.0456 | Exploration: High
-[LLM] Calls: 45 | Cache: 67% | Avg latency: 523ms
+[PERF] 1524.2fps Frame:135000 Reward:18.32
+[GAME] Badges:1 Pokemon:8 Map:54 Pos:(12,8)
+[DECISION] LLM:892 (74%) | RL fallback:315
 [REWARD] {'badges': 2000, 'pokemon': 150, 'exploration': 88} = 2238.00
 ```
 
@@ -255,25 +288,64 @@ LLM_USE_VISION: bool = False
 
 ### LLM non funziona
 
-**Problema**: `[LLM] Ollama not running`
+**Problema**: `[LLM] Cannot connect to Ollama at http://localhost:11434`
+
 ```bash
 # Avvia Ollama server
 ollama serve
 ```
 
-**Problema**: `[LLM] Model not found`
+**Problema**: `[LLM] Model 'qwen3-vl:2b' not found. Available: [...]`
+
 ```bash
 # Scarica il modello
 ollama pull qwen3-vl:2b
 ```
 
+**Problema**: LLM non prende decisioni (0 su 2000), con molti fallback RL
+
+Possibili cause:
+1. Ollama non e' in esecuzione
+2. Modello non disponibile
+3. Richieste LLM falliscono ripetutamente
+
+Soluzione:
+```bash
+# Testa la connessione LLM
+python test_llm_connection.py
+
+# Verifica che Ollama sia in esecuzione
+ollama serve
+
+# Verifica che il modello sia disponibile
+ollama list
+```
+
+**Problema**: Richieste LLM falliscono con messaggi tipo "Request returned no response"
+
+Questo indica che le richieste all'LLM stanno fallendo. Il sistema ha ora un meccanismo di retry configurabile:
+- Controlla la connessione a Ollama
+- Aumenta `LLM_RETRY_ATTEMPTS` in `src/cfg.py` se necessario
+- Controlla i log per dettagli sui fallimenti
+
 **Problema**: Lag durante il gioco
+
 ```python
 # In config.py, aumenta intervallo chiamate
 LLM_MIN_INTERVAL_MS: int = 3000  # Ogni 3 secondi
 
 # Oppure disabilita vision
 LLM_USE_VISION: bool = False
+```
+
+### Checkpoint incompatibile
+
+**Problema**: `exploration network architecture changed, training from scratch`
+
+Questo messaggio indica che l'architettura della rete e' cambiata rispetto al checkpoint salvato. Il sistema gestisce automaticamente questa situazione avviando un nuovo training. Per forzare un reset completo, elimina il file checkpoint:
+
+```bash
+del "pokemon_ai_saves_Pokemon Red\model_ppo.pth"
 ```
 
 ### Problemi Performance

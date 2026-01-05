@@ -98,7 +98,8 @@ class PokemonAIAgent:
             min_interval_ms=config.LLM_MIN_INTERVAL_MS, max_calls_per_minute=config.LLM_MAX_CALLS_PER_MINUTE,
             cache_ttl_seconds=config.LLM_CACHE_TTL_SECONDS, use_vision=config.LLM_USE_VISION,
             use_for_exploration=config.LLM_USE_FOR_EXPLORATION, use_for_battle=config.LLM_USE_FOR_BATTLE,
-            use_for_menu=config.LLM_USE_FOR_MENU
+            use_for_menu=config.LLM_USE_FOR_MENU, fallback_on_error=config.LLM_FALLBACK_ON_ERROR,
+            retry_attempts=config.LLM_RETRY_ATTEMPTS
         )
         self.llm_client = OllamaLLMClient(llm_config)
         print(f"[LLM] {'Ready' if self.llm_client.available else 'Disabled'}")
@@ -159,20 +160,34 @@ class PokemonAIAgent:
             return
         try:
             ckpt = torch.load(self.model_path, map_location=self.device, weights_only=True)
-            self.network_group.exploration_network.load_state_dict(ckpt['explorer_state'])
-            self.network_group.battle_network.load_state_dict(ckpt['battle_state'])
-            self.network_group.menu_network.load_state_dict(ckpt['menu_state'])
+            networks_loaded = True
+            for name, network, key in [
+                ('exploration', self.network_group.exploration_network, 'explorer_state'),
+                ('battle', self.network_group.battle_network, 'battle_state'),
+                ('menu', self.network_group.menu_network, 'menu_state'),
+            ]:
+                try:
+                    network.load_state_dict(ckpt[key])
+                except RuntimeError as e:
+                    logger.warning(f"{name} network architecture changed, training from scratch")
+                    networks_loaded = False
             if 'moe_router_state' in ckpt:
-                self.moe_router.load_state_dict(ckpt['moe_router_state'])
+                try:
+                    self.moe_router.load_state_dict(ckpt['moe_router_state'])
+                except RuntimeError:
+                    logger.warning("MoE router architecture changed, training from scratch")
             if 'world_model_state' in ckpt:
                 try:
                     self.world_model.load_state_dict(ckpt['world_model_state'])
                     self.world_model_optimizer.load_state_dict(ckpt['world_model_optimizer_state'])
                 except RuntimeError:
                     logger.warning("World model architecture changed, training from scratch")
-            self.episode_count = ckpt.get('episode', 0)
-            self.frame_count = ckpt.get('frame', 0)
-            print(f"[LOAD] Episode {self.episode_count}, Frame {self.frame_count}")
+            if networks_loaded:
+                self.episode_count = ckpt.get('episode', 0)
+                self.frame_count = ckpt.get('frame', 0)
+                print(f"[LOAD] Episode {self.episode_count}, Frame {self.frame_count}")
+            else:
+                logger.info("Network architecture incompatible, starting fresh training")
             if os.path.exists(self.game_state_path):
                 try:
                     with open(self.game_state_path, 'rb') as f:
@@ -180,7 +195,8 @@ class PokemonAIAgent:
                 except Exception:
                     pass
         except Exception as e:
-            raise PokemonAIError(f"Checkpoint load failed: {e}") from e
+            logger.error(f"Checkpoint load failed: {e}, starting fresh")
+            return
 
     def _save_checkpoint(self):
         ckpt = {
@@ -336,6 +352,11 @@ class PokemonAIAgent:
                     mask = self.action_filter.get_action_mask(self.current_game_state)
                     action, log_prob, value = self.network_group.choose_action(stacked, self.current_game_state, action_mask=mask)
                     self.rl_fallbacks += 1
+
+                    # In battle states, try to be more patient with LLM
+                    if self.current_game_state == "battle":
+                        # Log when we fallback in battle as this is critical for strategy
+                        logger.debug(f"[FALLBACK] Using RL in battle state (LLM:{self.llm_decisions}, RL:{self.rl_fallbacks})")
 
                 self.action_history.append(self.actions[action])
                 if len(self.action_history) > 20:

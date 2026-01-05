@@ -142,17 +142,17 @@ class VisionPPONetwork(nn.Module):
         return self.policy(features), self.value(features)
 
 
-class ExplorationNetwork(VisionPPONetwork):
+class ExplorationPPO(VisionPPONetwork):
     def __init__(self, n_actions: int, input_channels: int = 4):
         super().__init__(n_actions, input_channels, embed_dim=192, num_heads=3, kv_rank=48, num_mla_layers=1)
 
 
-class BattleNetwork(VisionPPONetwork):
+class BattlePPO(VisionPPONetwork):
     def __init__(self, n_actions: int, input_channels: int = 4):
         super().__init__(n_actions, input_channels, embed_dim=320, num_heads=5, kv_rank=80, num_mla_layers=3)
 
 
-class MenuNetwork(VisionPPONetwork):
+class MenuPPO(VisionPPONetwork):
     def __init__(self, n_actions: int, input_channels: int = 4):
         super().__init__(n_actions, input_channels, embed_dim=128, num_heads=2, kv_rank=32, num_mla_layers=1)
 

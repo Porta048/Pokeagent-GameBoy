@@ -47,15 +47,17 @@ class Config:
     LLM_ENABLED: bool = True
     LLM_HOST: str = "http://localhost:11434"
     LLM_MODEL: str = "qwen3-vl:2b"
-    LLM_TEMPERATURE: float = 0.7
-    LLM_TIMEOUT: float = 10.0  # Timeout aumentato (async non blocca)
-    LLM_MIN_INTERVAL_MS: int = 1000  # Chiamata ogni 1 secondo
-    LLM_MAX_CALLS_PER_MINUTE: int = 60  # Max 60 chiamate/min
-    LLM_CACHE_TTL_SECONDS: int = 15  # Cache 15s
+    LLM_TEMPERATURE: float = 0.3  # Lower temperature for more consistent responses
+    LLM_TIMEOUT: float = 15.0  # Increased timeout to account for processing time
+    LLM_MIN_INTERVAL_MS: int = 2000  # Increased interval to 2 seconds to give more processing time
+    LLM_MAX_CALLS_PER_MINUTE: int = 30  # Reduced calls per minute to avoid overwhelming
+    LLM_CACHE_TTL_SECONDS: int = 20  # Increased cache TTL to reuse responses longer
     LLM_USE_VISION: bool = True  # Vision abilitata (async non blocca)
     LLM_USE_FOR_EXPLORATION: bool = True
     LLM_USE_FOR_BATTLE: bool = True
     LLM_USE_FOR_MENU: bool = False  # Menu disabilitato
+    LLM_FALLBACK_ON_ERROR: bool = True  # Use RL as fallback when LLM fails
+    LLM_RETRY_ATTEMPTS: int = 2  # Number of retry attempts for failed requests
     def __post_init__(self) -> None:
         self._validate_paths()
         self._validate_ranges()
