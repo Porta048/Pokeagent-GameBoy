@@ -24,6 +24,9 @@ keyboard>=0.13.5
 # NOTA: Prima esecuzione scarica modello (~100MB)
 # easyocr>=1.7.0
 
+# HTTP client for LLM integration (Ollama)
+requests>=2.31.0
+
 # Optional: For parallel training (future feature)
 # multiprocessing is built-in
 # ray>=2.9.0  # Uncomment for distributed training

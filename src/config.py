@@ -42,6 +42,18 @@ class Config:
     ANTI_LOOP_ENABLED: bool = True  # Enable anti-loop with menu spam detection
     LOG_FILE: str = "pokemon_ai.log"
     LOG_LEVEL: str = "INFO"
+
+    # LLM Integration (Ollama + ministral-3b)
+    LLM_ENABLED: bool = True
+    LLM_HOST: str = "http://localhost:11434"
+    LLM_MODEL: str = "ministral-3b:latest"
+    LLM_TEMPERATURE: float = 0.7
+    LLM_TIMEOUT: float = 5.0
+    LLM_MIN_INTERVAL_MS: int = 500
+    LLM_USE_VISION: bool = True
+    LLM_USE_FOR_EXPLORATION: bool = True
+    LLM_USE_FOR_BATTLE: bool = True
+    LLM_USE_FOR_MENU: bool = False
     def __post_init__(self) -> None:
         self._validate_paths()
         self._validate_ranges()

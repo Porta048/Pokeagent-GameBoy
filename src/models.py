@@ -1,7 +1,8 @@
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional, Any, List
 import logging
 import torch
 import torch.nn as nn
+import numpy as np
 from .hyperparameters import HYPERPARAMETERS
 from .vision_encoder import (
     ExplorationPPO,
@@ -77,19 +78,40 @@ class PPONetworkGroup:
         state: torch.Tensor,
         game_state: str,
         deterministic: bool = False,
-        action_mask: list = None
+        action_mask: list = None,
+        llm_bias: Optional[Dict[str, Any]] = None
     ) -> Tuple[int, float, float]:
+        """
+        Choose action using policy network with optional LLM bias.
+
+        Args:
+            state: Current game state tensor
+            game_state: 'exploring', 'battle', or 'menu'
+            deterministic: If True, use argmax instead of sampling
+            action_mask: Optional mask for valid actions
+            llm_bias: Optional LLM response with 'suggested_action' and 'confidence'
+
+        Returns:
+            (action_index, log_probability, value_estimate)
+        """
         from torch.distributions import Categorical
         network, _ = self.select_network(game_state)
         network.eval()
         with torch.no_grad():
             state_batch = state.unsqueeze(0) if state.dim() == 3 else state
             policy_logits, value = network(state_batch)
+
+            # Apply action mask first
             if action_mask is not None:
                 from .action_filter import ContextAwareActionFilter
                 policy_logits = ContextAwareActionFilter.apply_mask_to_logits(
                     policy_logits, action_mask
                 )
+
+            # Apply LLM bias as soft influence on action probabilities
+            if llm_bias is not None and llm_bias.get('suggested_action') is not None:
+                policy_logits = self._apply_llm_bias(policy_logits, llm_bias)
+
             dist = Categorical(logits=policy_logits)
             if deterministic:
                 action = policy_logits.argmax(dim=-1)
@@ -97,6 +119,47 @@ class PPONetworkGroup:
                 action = dist.sample()
             log_prob = dist.log_prob(action)
         return action.item(), log_prob.item(), value.item()
+
+    def _apply_llm_bias(
+        self,
+        policy_logits: torch.Tensor,
+        llm_bias: Dict[str, Any]
+    ) -> torch.Tensor:
+        """
+        Apply LLM suggestion as soft bias to policy logits.
+
+        The LLM acts as a "strategic advisor" - it boosts the logit
+        of suggested actions but doesn't override the policy network.
+
+        Args:
+            policy_logits: Raw logits from policy network [batch, n_actions]
+            llm_bias: Dict with 'suggested_action' (str) and 'confidence' (float)
+
+        Returns:
+            Adjusted policy logits
+        """
+        suggested_action = llm_bias.get('suggested_action')
+        confidence = llm_bias.get('confidence', 0.5)
+
+        # Map action name to index
+        action_to_idx = {
+            None: 0, 'up': 1, 'down': 2, 'left': 3, 'right': 4,
+            'a': 5, 'b': 6, 'start': 7, 'select': 8
+        }
+
+        action_idx = action_to_idx.get(suggested_action)
+        if action_idx is None:
+            return policy_logits
+
+        # Calculate boost based on confidence
+        # Higher confidence = stronger boost (0.5 to 2.0 logit addition)
+        logit_boost = confidence * 2.0
+
+        # Apply boost to suggested action
+        boosted_logits = policy_logits.clone()
+        boosted_logits[:, action_idx] += logit_boost
+
+        return boosted_logits
     def train_ppo(
         self,
         batch_data: Dict,

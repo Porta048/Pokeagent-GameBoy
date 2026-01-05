@@ -44,6 +44,7 @@ from .action_filter import ContextAwareActionFilter
 from .trajectory_buffer import TrajectoryBuffer
 from .models import PPONetworkGroup
 from .simple_world_model import SimpleWorldModel, compute_world_model_loss
+from .llm_integration import OllamaLLMClient, LLMConfig
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -114,6 +115,26 @@ class PokemonAIAgent:
         self.action_filter = ContextAwareActionFilter()
         self.current_game_state = "exploring"
         self.last_screen_array = None
+
+        # LLM Integration (ministral-3b via Ollama)
+        llm_config = LLMConfig(
+            enabled=config.LLM_ENABLED,
+            host=config.LLM_HOST,
+            model=config.LLM_MODEL,
+            temperature=config.LLM_TEMPERATURE,
+            timeout=config.LLM_TIMEOUT,
+            min_interval_ms=config.LLM_MIN_INTERVAL_MS,
+            use_vision=config.LLM_USE_VISION,
+            use_for_exploration=config.LLM_USE_FOR_EXPLORATION,
+            use_for_battle=config.LLM_USE_FOR_BATTLE,
+            use_for_menu=config.LLM_USE_FOR_MENU,
+        )
+        self.llm_client = OllamaLLMClient(llm_config)
+        if self.llm_client.available:
+            print(f"[LLM] ministral-3b ready for strategic reasoning")
+        else:
+            print(f"[LLM] Disabled or unavailable - using pure RL")
+
         self.stats = self._load_stats()
         self.episode_count = 0
         self.frame_count = 0
@@ -409,8 +430,17 @@ class PokemonAIAgent:
                     self.current_game_state = "exploring"
 
                 action_mask = self.action_filter.get_action_mask(self.current_game_state)
+
+                # Get LLM strategic suggestion (rate-limited, cached)
+                llm_response = self.llm_client.get_action_bias(
+                    self.current_game_state,
+                    memory_state,
+                    screen_array=self.last_screen_array
+                )
+
                 action, log_prob, value = self.network_group.choose_action(
-                    stacked_state, self.current_game_state, action_mask=action_mask
+                    stacked_state, self.current_game_state, action_mask=action_mask,
+                    llm_bias=llm_response
                 )
                 button = self.actions[action]
                 if button is not None:
@@ -456,6 +486,13 @@ class PokemonAIAgent:
                           f"Pos: ({mem_state.get('pos_x', 0)},{mem_state.get('pos_y', 0)})")
                     print(f"[ADAPTIVE] Entropy: {current_entropy:.4f} | "
                           f"Exploration: {'High' if current_entropy > 0.03 else 'Medium' if current_entropy > 0.01 else 'Low'}")
+
+                    # Log LLM stats if available
+                    if self.llm_client.available:
+                        llm_stats = self.llm_client.get_stats()
+                        print(f"[LLM] Calls: {llm_stats['calls']} | "
+                              f"Cache: {llm_stats['cache_hit_rate']:.0f}% | "
+                              f"Avg latency: {llm_stats['avg_latency_ms']:.0f}ms")
                     perf_start_time = time.time()
                     perf_frame_count = 0
                 self.trajectory_buffer.add(
