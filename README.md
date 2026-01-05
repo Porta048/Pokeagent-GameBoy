@@ -34,30 +34,6 @@ Agente AI completamente autonomo che impara a giocare Pokemon Rosso/Blu dall'ini
 - **World Model**: Immaginazione e pianificazione a lungo termine
 - **LLM Reasoning**: Decision-making strategico con Qwen3-VL via Ollama
 
-## Architettura
-
-### Sistema Ibrido RL + LLM
-
-```
-                    +-------------------+
-                    |   Qwen3-VL LLM    |
-                    | (Strategic Bias)  |
-                    +--------+----------+
-                             |
-                             v
-+----------+    +-------------------------+    +-----------+
-| PyBoy    | -> |    PPO Network        | -> | Actions   |
-| Emulator |    | (ExplorationPPO/      |    | (A/B/D-pad|
-| (screen) |    |  BattlePPO/MenuPPO)   |    |  etc.)    |
-+----------+    +-------------------------+    +-----------+
-                             ^
-                             |
-                     +-------+-------+
-                     |   Qwen3-VL    |
-                     |   (Strategic  |
-                     |    Reasoning) |
-                     +---------------+
-
 ### Sistema di Reward Gerarchico
 
 Formula matematica per bilanciare obiettivi a breve e lungo termine:
@@ -268,26 +244,6 @@ LLM_USE_VISION: bool = False
 [REWARD] {'badges': 2000, 'pokemon': 150, 'exploration': 88} = 2238.00
 ```
 
-## Struttura Progetto
-
-```
-Pokeagent-GameBoy/
-|-- src/
-|   |-- main.py              # Entry point e loop training
-|   |-- config.py            # Configurazione
-|   |-- models.py            # PPONetworkGroup
-|   |-- vision_encoder.py    # Vision Encoder (PixelShuffle + MLA)
-|   |-- llm_integration.py   # LLM client asincrono
-|   |-- memory_reader.py     # Sistema ricompense
-|   |-- anti_loop.py         # Prevenzione loop
-|   |-- action_filter.py     # Mascheramento azioni
-|   |-- trajectory_buffer.py # Raccolta traiettorie PPO
-|   |-- simple_world_model.py # World Model per immaginazione
-|   `-- hyperparameters.py   # Iperparametri
-|-- tests/                   # Test unitari
-|-- docs/                    # Documentazione
-`-- README.md
-```
 
 ## Risoluzione Problemi
 
