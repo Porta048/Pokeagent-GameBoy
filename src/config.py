@@ -7,9 +7,9 @@ import torch
 class Config:
     ROM_PATH: str = r"C:\Users\chatg\Documents\GitHub\Pokemon Red.gb"
     HEADLESS: bool = False
-    EMULATION_SPEED: int = 0  
+    EMULATION_SPEED: int = 0  # Velocità illimitata
     RENDER_ENABLED: bool = True
-    RENDER_EVERY_N_FRAMES: int = 2
+    RENDER_EVERY_N_FRAMES: int = 2  # Renderizza ogni 2 frame
     DEVICE: torch.device = field(default_factory=lambda: torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     SAVE_DIR_PREFIX: str = "pokemon_ai_saves"
     MODEL_FILENAME: str = "model_ppo.pth"
@@ -31,10 +31,10 @@ class Config:
     ])
     FRAMESKIP_MAP: Dict[str, int] = field(default_factory=lambda: {
         "dialogue": 6,
-        "battle": 12,
-        "menu": 8,
-        "exploring": 10,
-        "base": 8
+        "battle": 10,
+        "menu": 6,
+        "exploring": 8,
+        "base": 6
     })
     HP_THRESHOLD: int = 500
     MENU_THRESHOLD: float = 0.15
@@ -43,17 +43,19 @@ class Config:
     LOG_FILE: str = "pokemon_ai.log"
     LOG_LEVEL: str = "INFO"
 
-    # LLM Integration (Ollama + ministral-3b)
+    # LLM Integration (Ollama + qwen3-vl:2b)
     LLM_ENABLED: bool = True
     LLM_HOST: str = "http://localhost:11434"
-    LLM_MODEL: str = "ministral-3b:latest"
+    LLM_MODEL: str = "qwen3-vl:2b"
     LLM_TEMPERATURE: float = 0.7
-    LLM_TIMEOUT: float = 5.0
-    LLM_MIN_INTERVAL_MS: int = 500
-    LLM_USE_VISION: bool = True
+    LLM_TIMEOUT: float = 10.0  # Timeout aumentato (async non blocca)
+    LLM_MIN_INTERVAL_MS: int = 1000  # Chiamata ogni 1 secondo
+    LLM_MAX_CALLS_PER_MINUTE: int = 60  # Max 60 chiamate/min
+    LLM_CACHE_TTL_SECONDS: int = 15  # Cache 15s
+    LLM_USE_VISION: bool = True  # Vision abilitata (async non blocca)
     LLM_USE_FOR_EXPLORATION: bool = True
     LLM_USE_FOR_BATTLE: bool = True
-    LLM_USE_FOR_MENU: bool = False
+    LLM_USE_FOR_MENU: bool = False  # Menu disabilitato
     def __post_init__(self) -> None:
         self._validate_paths()
         self._validate_ranges()

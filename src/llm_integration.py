@@ -1,13 +1,13 @@
 """
 LLM Integration for Pokemon AI Agent.
 
-Uses Ollama with ministral-3b for:
+Uses Ollama for:
 - Strategic decision-making (exploration direction, battle tactics)
 - Action bias based on game context reasoning
 - Optional: Screenshot analysis (multimodal)
 
 Architecture:
-- Async-friendly with sync fallback
+- Async-friendly with background thread for non-blocking calls
 - Caching to reduce inference calls
 - Graceful degradation if LLM unavailable
 """
@@ -16,9 +16,11 @@ import logging
 import base64
 import io
 import time
+import threading
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
 from collections import deque
+from queue import Queue, Empty
 
 import numpy as np
 
@@ -42,7 +44,7 @@ class LLMConfig:
     """Configuration for LLM integration."""
     enabled: bool = True
     host: str = "http://localhost:11434"
-    model: str = "ministral-3b:latest"
+    model: str = "qwen3-vl:2b"
 
     # Inference settings
     temperature: float = 0.7
@@ -75,71 +77,177 @@ class LLMRateLimiter:
         self.max_per_minute = max_per_minute
         self.last_call_time = 0.0
         self.call_times: deque = deque(maxlen=max_per_minute)
+        self._lock = threading.Lock()
 
     def can_call(self) -> bool:
         """Check if we can make an LLM call."""
-        now = time.time()
+        with self._lock:
+            now = time.time()
 
-        # Check minimum interval
-        if (now - self.last_call_time) * 1000 < self.min_interval_ms:
-            return False
+            # Check minimum interval
+            if (now - self.last_call_time) * 1000 < self.min_interval_ms:
+                return False
 
-        # Check calls per minute
-        one_minute_ago = now - 60
-        recent_calls = sum(1 for t in self.call_times if t > one_minute_ago)
-        if recent_calls >= self.max_per_minute:
-            return False
+            # Check calls per minute
+            one_minute_ago = now - 60
+            recent_calls = sum(1 for t in self.call_times if t > one_minute_ago)
+            if recent_calls >= self.max_per_minute:
+                return False
 
-        return True
+            return True
 
     def record_call(self) -> None:
         """Record that a call was made."""
-        now = time.time()
-        self.last_call_time = now
-        self.call_times.append(now)
+        with self._lock:
+            now = time.time()
+            self.last_call_time = now
+            self.call_times.append(now)
 
 
 class ResponseCache:
-    """Simple TTL cache for LLM responses."""
+    """Thread-safe TTL cache for LLM responses."""
 
     def __init__(self, max_size: int = 128, ttl_seconds: int = 60):
         self.max_size = max_size
         self.ttl_seconds = ttl_seconds
         self.cache: Dict[str, Tuple[Any, float]] = {}
+        self._lock = threading.Lock()
 
     def _make_key(self, game_state: str, context_hash: str) -> str:
         return f"{game_state}:{context_hash}"
 
     def get(self, game_state: str, context_hash: str) -> Optional[Dict]:
         """Get cached response if valid."""
-        key = self._make_key(game_state, context_hash)
-        if key not in self.cache:
-            return None
+        with self._lock:
+            key = self._make_key(game_state, context_hash)
+            if key not in self.cache:
+                return None
 
-        response, timestamp = self.cache[key]
-        if time.time() - timestamp > self.ttl_seconds:
-            del self.cache[key]
-            return None
+            response, timestamp = self.cache[key]
+            if time.time() - timestamp > self.ttl_seconds:
+                del self.cache[key]
+                return None
 
-        return response
+            return response
 
     def set(self, game_state: str, context_hash: str, response: Dict) -> None:
         """Cache a response."""
-        # Evict old entries if at capacity
-        if len(self.cache) >= self.max_size:
-            oldest_key = min(self.cache.keys(), key=lambda k: self.cache[k][1])
-            del self.cache[oldest_key]
+        with self._lock:
+            # Evict old entries if at capacity
+            if len(self.cache) >= self.max_size:
+                oldest_key = min(self.cache.keys(), key=lambda k: self.cache[k][1])
+                del self.cache[oldest_key]
 
-        key = self._make_key(game_state, context_hash)
-        self.cache[key] = (response, time.time())
+            key = self._make_key(game_state, context_hash)
+            self.cache[key] = (response, time.time())
+
+
+class AsyncLLMWorker:
+    """Background worker for non-blocking LLM calls."""
+
+    def __init__(self, config: LLMConfig):
+        self.config = config
+        self.request_queue: Queue = Queue(maxsize=1)  # Only keep latest request
+        self.latest_response: Optional[Dict[str, Any]] = None
+        self._lock = threading.Lock()
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self):
+        """Start the background worker thread."""
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._worker_loop, daemon=True)
+        self._thread.start()
+        logger.debug("[LLM] Async worker started")
+
+    def stop(self):
+        """Stop the background worker thread."""
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=1.0)
+            self._thread = None
+
+    def submit_request(self, prompt: str, image_b64: Optional[str] = None) -> None:
+        """Submit a request to be processed in background (non-blocking)."""
+        # Clear old request if queue is full
+        try:
+            self.request_queue.get_nowait()
+        except Empty:
+            pass
+
+        try:
+            self.request_queue.put_nowait((prompt, image_b64))
+        except:
+            pass  # Queue full, skip this request
+
+    def get_latest_response(self) -> Optional[Dict[str, Any]]:
+        """Get the most recent LLM response (non-blocking)."""
+        with self._lock:
+            return self.latest_response
+
+    def _worker_loop(self):
+        """Background worker loop."""
+        while self._running:
+            try:
+                # Wait for request with timeout
+                try:
+                    prompt, image_b64 = self.request_queue.get(timeout=0.1)
+                except Empty:
+                    continue
+
+                # Make the API call
+                response = self._make_request(prompt, image_b64)
+                if response:
+                    with self._lock:
+                        self.latest_response = response
+
+            except Exception as e:
+                logger.debug(f"[LLM] Worker error: {e}")
+
+    def _make_request(self, prompt: str, image_b64: Optional[str]) -> Optional[Dict]:
+        """Make the actual HTTP request to Ollama."""
+        try:
+            payload = {
+                "model": self.config.model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": self.config.temperature,
+                    "num_predict": self.config.max_tokens,
+                }
+            }
+
+            if image_b64 is not None:
+                payload["images"] = [image_b64]
+
+            response = requests.post(
+                f"{self.config.host}/api/generate",
+                json=payload,
+                timeout=self.config.timeout
+            )
+
+            if response.status_code != 200:
+                return None
+
+            result = response.json()
+            return {
+                'raw_response': result.get('response', '').strip(),
+                'timestamp': time.time()
+            }
+
+        except Exception as e:
+            logger.debug(f"[LLM] Request failed: {e}")
+            return None
 
 
 class OllamaLLMClient:
     """
-    Client for Ollama LLM integration.
+    Client for Ollama LLM integration with async support.
 
-    Provides strategic reasoning for the Pokemon AI agent using
-    ministral-3b's multimodal capabilities.
+    Provides strategic reasoning for the Pokemon AI agent.
+    Uses background thread to avoid blocking the game loop.
     """
 
     def __init__(self, config: Optional[LLMConfig] = None):
@@ -157,8 +265,18 @@ class OllamaLLMClient:
             'calls': 0,
             'cache_hits': 0,
             'errors': 0,
-            'total_latency_ms': 0
+            'total_latency_ms': 0,
+            'async_requests': 0
         }
+
+        # Async worker for non-blocking calls
+        self._async_worker = AsyncLLMWorker(self.config)
+        if self.available:
+            self._async_worker.start()
+
+        # Store last parsed response
+        self._last_parsed_response: Optional[Dict[str, Any]] = None
+        self._last_game_state: str = ""
 
     def _check_availability(self) -> bool:
         """Check if Ollama is running and model is available."""
@@ -260,7 +378,7 @@ class OllamaLLMClient:
             prompt = f"""{base_context}
 BATTLE MODE - Quick tactical decision needed.
 
-Given the current battle screenshot, suggest the best action:
+Given the current battle, suggest the best action:
 - ATTACK: Press A to attack
 - SWITCH: Navigate to switch Pokemon
 - ITEM: Navigate to use item
@@ -315,7 +433,10 @@ ONE word response."""
         force: bool = False
     ) -> Optional[Dict[str, Any]]:
         """
-        Get LLM suggestion for action bias.
+        Get LLM suggestion for action bias (NON-BLOCKING).
+
+        Returns the latest available response without waiting for LLM.
+        Submits new requests to background worker when rate limit allows.
 
         Returns dict with:
         - 'suggested_action': str (e.g., 'up', 'a', 'b')
@@ -323,7 +444,7 @@ ONE word response."""
         - 'reasoning': str
         - 'action_weights': Optional[Dict[str, float]] for soft bias
 
-        Returns None if LLM unavailable or rate limited.
+        Returns None if LLM unavailable or no response ready.
         """
         if not self.available:
             return None
@@ -336,78 +457,42 @@ ONE word response."""
         if game_state == "menu" and not self.config.use_for_menu:
             return None
 
-        # Check rate limit
-        if not force and not self.rate_limiter.can_call():
-            return None
-
-        # Check cache
+        # Check cache first
         context_hash = self._compute_context_hash(game_state, memory_state)
         cached = self.cache.get(game_state, context_hash)
         if cached is not None:
             self.stats['cache_hits'] += 1
             return cached
 
-        # Build prompt
-        prompt, image_b64 = self._build_prompt(game_state, memory_state, screen_array)
-
-        # Make API call
-        try:
-            start_time = time.time()
-
-            payload = {
-                "model": self.config.model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": self.config.temperature,
-                    "num_predict": self.config.max_tokens,
-                }
-            }
-
-            # Add image for vision models
-            if image_b64 is not None:
-                payload["images"] = [image_b64]
-
-            response = requests.post(
-                f"{self.config.host}/api/generate",
-                json=payload,
-                timeout=self.config.timeout
-            )
-
-            latency_ms = (time.time() - start_time) * 1000
-            self.stats['total_latency_ms'] += latency_ms
-            self.stats['calls'] += 1
+        # Submit new request if rate limit allows (non-blocking)
+        if force or self.rate_limiter.can_call():
+            prompt, image_b64 = self._build_prompt(game_state, memory_state, screen_array)
+            self._async_worker.submit_request(prompt, image_b64)
             self.rate_limiter.record_call()
+            self.stats['async_requests'] += 1
+            self._last_game_state = game_state
 
-            if response.status_code != 200:
-                logger.warning(f"[LLM] API error: {response.status_code}")
-                self.stats['errors'] += 1
-                return None
+        # Check for new response from worker (non-blocking)
+        worker_response = self._async_worker.get_latest_response()
+        if worker_response and worker_response.get('raw_response'):
+            # Check if this is a new response
+            response_time = worker_response.get('timestamp', 0)
+            last_time = getattr(self, '_last_response_time', 0)
 
-            result = response.json()
-            raw_response = result.get('response', '').strip()
+            if response_time > last_time:
+                self._last_response_time = response_time
+                raw_response = worker_response['raw_response']
+                parsed = self._parse_response(raw_response, self._last_game_state or game_state)
+                self._last_parsed_response = parsed
+                self.stats['calls'] += 1
 
-            # Parse response
-            parsed = self._parse_response(raw_response, game_state)
+                # Cache the result
+                self.cache.set(game_state, context_hash, parsed)
 
-            # Cache result
-            self.cache.set(game_state, context_hash, parsed)
+                return parsed
 
-            logger.debug(f"[LLM] {game_state}: {parsed['suggested_action']} "
-                        f"({latency_ms:.0f}ms) - {parsed['reasoning'][:30]}")
-
-            return parsed
-
-        except requests.exceptions.Timeout:
-            logger.debug("[LLM] Request timeout")
-            self.stats['errors'] += 1
-            return None
-        except Exception as e:
-            logger.warning(f"[LLM] Request failed: {e}")
-            self.stats['errors'] += 1
-            if not self.config.fallback_on_error:
-                raise
-            return None
+        # Return last known response if available
+        return self._last_parsed_response
 
     def _parse_response(self, raw: str, game_state: str) -> Dict[str, Any]:
         """Parse LLM response into structured format."""
@@ -539,6 +624,10 @@ ONE word response."""
             'model': self.config.model
         }
 
+    def shutdown(self):
+        """Shutdown the async worker."""
+        self._async_worker.stop()
+
 
 # Singleton instance for easy import
 _llm_client: Optional[OllamaLLMClient] = None
@@ -555,4 +644,6 @@ def get_llm_client(config: Optional[LLMConfig] = None) -> OllamaLLMClient:
 def reset_llm_client() -> None:
     """Reset the LLM client (useful for testing)."""
     global _llm_client
+    if _llm_client:
+        _llm_client.shutdown()
     _llm_client = None

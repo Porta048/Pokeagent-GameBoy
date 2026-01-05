@@ -124,6 +124,8 @@ class PokemonAIAgent:
             temperature=config.LLM_TEMPERATURE,
             timeout=config.LLM_TIMEOUT,
             min_interval_ms=config.LLM_MIN_INTERVAL_MS,
+            max_calls_per_minute=config.LLM_MAX_CALLS_PER_MINUTE,
+            cache_ttl_seconds=config.LLM_CACHE_TTL_SECONDS,
             use_vision=config.LLM_USE_VISION,
             use_for_exploration=config.LLM_USE_FOR_EXPLORATION,
             use_for_battle=config.LLM_USE_FOR_BATTLE,
@@ -131,7 +133,7 @@ class PokemonAIAgent:
         )
         self.llm_client = OllamaLLMClient(llm_config)
         if self.llm_client.available:
-            print(f"[LLM] ministral-3b ready for strategic reasoning")
+            print(f"[LLM] {config.LLM_MODEL} ready for strategic reasoning")
         else:
             print(f"[LLM] Disabled or unavailable - using pure RL")
 
@@ -446,14 +448,10 @@ class PokemonAIAgent:
                 if button is not None:
                     self.pyboy.button_press(button)
                 frameskip = config.FRAMESKIP_MAP.get(self.current_game_state, config.FRAMESKIP_MAP["base"])
-                if config.RENDER_ENABLED:
-                    render_freq = config.RENDER_EVERY_N_FRAMES
-                    for i in range(frameskip):
-                        should_render = (i % render_freq == 0)
-                        self.pyboy.tick(1, render=should_render)
-                        render_counter += 1
-                else:
-                    self.pyboy.tick(count=frameskip, render=False)
+                # PyBoy tick(count, render=True) renderizza solo l'ultimo frame
+                # Usiamo la modalità corretta per performance e rendering
+                self.pyboy.tick(count=frameskip, render=config.RENDER_ENABLED)
+                render_counter += frameskip
                 if button is not None:
                     self.pyboy.button_release(button)
                 next_single_frame = self._get_screen_tensor()
