@@ -1,436 +1,159 @@
-# Pokemon AI Agent - Versione 5.1
+# PokéAgent GameBoy
 
-[![CI](https://github.com/yourusername/Pokeagent-GameBoy/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/Pokeagent-GameBoy/actions/workflows/ci.yml)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![GRPO](https://img.shields.io/badge/RL-GRPO-green.svg)](https://arxiv.org/abs/2501.12948)
-[![LLM](https://img.shields.io/badge/LLM-Ollama-purple.svg)](https://ollama.ai/)
+Un agente AI autonomo progettato per giocare a Pokémon Rosso sul Game Boy utilizzando **PyBoy** per l'emulazione e **LLM (Large Language Models)** locali (tramite Ollama) per il ragionamento decisionale.
 
-Agente AI autonomo che gioca a Pokemon Rosso/Blu usando **GRPO** (Group Relative Policy Optimization) con **World Model** e **integrazione LLM** per decision-making strategico.
+L'agente utilizza un approccio ibrido che combina:
+- **Visione Computerizzata**: Analisi dello schermo di gioco.
+- **Ragionamento LLM (Chain of Thought)**: Pianificazione strategica basata sul contesto.
+- **Knowledge Base**: Database di conoscenze sul gioco (mappe, obiettivi, debolezze tipi).
+- **Memoria Ibrida**: Memoria a breve termine per il contesto immediato e a lungo termine per i progressi.
 
-> **VERSIONE 5.1 - GRPO + WORLD MODEL + LLM** (Gennaio 2026):
->
-> - **LLM Integration**: Qwen3-VL per reasoning strategico (async, non-blocking)
-> - **Vision-Language Model**: Screenshot analysis in tempo reale
-> - **GRPO**: DeepSeek-R1 group-relative advantage normalization
-> - **World Model**: Dreamer-style imagination training
-> - **DeepSeek-VL2 Vision**: PixelShuffleAdaptor + Multi-head Latent Attention
-> - **1.76M parametri**: ExplorationPPO + BattlePPO + MenuPPO
-> - **Anti-loop system**: Menu spam detection + temporal reasoning
-> - **Graceful checkpoint handling**: Migrazione automatica tra architetture
+## Caratteristiche Principali
 
-<p align="center">
-  <a href="Screenshot%202025-09-13%20221934.png">
-    <img src="Screenshot%202025-09-13%20221934.png" alt="Screenshot del progetto" width="800"/>
-  </a>
-  <br>
-  <em>Screenshot del progetto</em>
-</p>
+*   **Architettura a 3 Fasi**:
+    *   **Planning**: Formula obiettivi a breve termine basati sullo stato attuale e sulla Knowledge Base.
+    *   **Execution**: Traduce gli obiettivi in sequenze di azioni precise, gestendo movimenti e menu.
+    *   **Critique**: Valuta periodicamente il successo delle azioni e adatta la strategia.
+*   **Integrazione LLM Locale**: Supporto per modelli via Ollama (default: `qwen2.5:0.5b` per velocità ed efficienza).
+*   **Chain of Thought (CoT)**: L'agente "pensa" prima di agire, spiegando il motivo delle sue scelte (visibile nei log).
+*   **Knowledge Base Semantica**: Il sistema conosce la mappa del gioco, le connessioni tra le aree e gli obiettivi principali.
+*   **Gestione Intelligente dei Fallback**: Se l'LLM è lento o non disponibile, l'agente usa logiche euristiche per evitare di bloccarsi.
+*   **Sincronizzazione GUI**: Ottimizzato per sincronizzare le azioni dell'agente con le animazioni del gioco.
 
-## Panoramica
+## Logica di Gioco del Modello
 
-Agente AI completamente autonomo che impara a giocare Pokemon Rosso/Blu dall'inizio alla fine senza intervento umano. L'agente combina:
+### Come l'Agente Prende Decisioni
 
-- **Reinforcement Learning (GRPO)**: Apprendimento da esperienza con policy optimization
-- **World Model**: Immaginazione e pianificazione a lungo termine
-- **LLM Reasoning**: Decision-making strategico con Qwen3-VL via Ollama
+L'agente opera attraverso un ciclo continuo di **percezione → pianificazione → azione → riflessione**:
 
-### Sistema di Reward Gerarchico
+1. **Analisi del Contesto**: Ogni 25 step, l'agente analizza:
+   - Posizione del giocatore nella mappa corrente
+   - Stato della squadra Pokémon (HP, livelli, condizioni)
+   - Modalità di gioco attiva (esplorazione, battaglia, menu, dialogo)
+   - Obiettivi a lungo termine (es. "Sconfiggi la Lega Pokémon")
 
-Formula matematica avanzata per bilanciare obiettivi a breve e lungo termine:
+2. **Formulazione degli Obiettivi**: Basandosi sul contesto, l'agente genera obiettivi specifici come:
+   - *"Esplora l'area per trovare oggetti utili"*
+   - *"Cura i Pokémon feriti al Centro Pokémon"*
+   - *"Affronta l'Allenatore sulla route 24"*
 
-```
-R_totale = α(t) * R_primario + β(t) * R_secondario + γ(t) * R_intrinseco + R_penalità
-```
+3. **Selezione delle Azioni**: L'agente considera 9 azioni possibili:
+   - Movimento: su, giù, sinistra, destra
+   - Interazioni: A, B, START, SELECT
+   - Nessuna azione (attesa)
 
-Dove i pesi adattivi si aggiornano dinamicamente secondo le seguenti formule:
+### Strategie di Gioco Intelligenti
 
-- **α(t) = α₀ * (1 + ρ_progressi)** - Aumenta con i progressi (badge, pokedex)
-- **β(t) = β₀ * (1 + ρ_stallo * e^(-Δt_senza_progressi/τ))** - Aumenta quando l'agente è bloccato
-- **γ(t) = γ₀ * (1 + ρ_esplorazione * H(s))** - Aumenta con l'entropia dello stato
+#### Riconoscimento delle Modalità
+L'agente adatta il suo comportamento in base alla situazione:
 
-Dove: α₀=0.3, β₀=0.4, γ₀=0.3, ρ_progressi=0.1, ρ_stallo=0.5, ρ_esplorazione=0.2, τ=300s.
+- **Modalità Esplorazione**: Movimenti variati, ricerca di oggetti, interazione con NPC
+- **Modalità Battaglia**: Strategie di tipo, gestione HP, cambi Pokémon
+- **Modalità Menu**: Navigazione efficiente tra le opzioni
+- **Modalità Dialogo**: Progressione attraverso le conversazioni
 
-### LLM Integration (Novita V5.1)
+#### Anti-Loop System
+Per evitare di rimanere bloccati, l'agente implementa:
+- **Pattern Detection**: Riconosce sequenze ripetitive (es. su-giù-su-giù)
+- **Circular Movement Detection**: Identifica movimenti circolari che indicano essere bloccati
+- **Alternating Pattern Prevention**: Evita pattern A-B-A-B che non portano progressione
+- **Exploration Boost**: Dopo 3-4 tentativi falliti, aumenta la varietà delle azioni
 
-L'LLM e' il **primary decision maker** - la rete RL e' usata come fallback:
+#### Sistema di Fallback Ibrido
+Quando l'LLM non è disponibile o lento:
 
-```text
-Decisione = LLM disponibile? -> Usa azione LLM
-                            -> Altrimenti: Usa rete RL (fallback)
-```
+1. **Strategia Contestuale**: Seleziona azioni appropriate alla modalità
+   - In battaglia: priorità a "A" per attaccare, "su/giù" per selezionare mosse
+   - Nei menu: "B" per tornare indietro, navigazione direzionale
+   - In esplorazione: movimenti cardinali con preferenza per nuove direzioni
 
-**Cambiamento da V5.0**: Prima l'LLM era un "soft bias advisor" che aggiungeva un boost ai logit della policy. Ora l'LLM decide direttamente l'azione, con la rete RL che interviene solo quando l'LLM non risponde in tempo.
+2. **Memoria di Pattern**: Ricorda quali azioni hanno funzionato in contesti simili
 
-| Componente | Descrizione | Beneficio |
-| ---------- | ----------- | --------- |
-| **Async Worker** | Thread separato per chiamate LLM | Zero lag nel game loop |
-| **Vision Analysis** | Screenshot encoding base64 | Contesto visivo per decisioni |
-| **Rate Limiting** | Max 60 chiamate/min | Bilanciamento latenza/frequenza |
-| **Response Cache** | TTL 15s | Riduce chiamate ripetitive |
-| **Primary Control** | LLM decide azione direttamente | Decisioni strategiche immediate |
-| **RL Fallback** | Rete PPO quando LLM non risponde | Continuita' senza interruzioni |
+3. **Euristica di Esplorazione**: Preferisce direzioni non esplorate recentemente
 
-**Configurazione LLM** ([src/config.py](src/config.py)):
+### Timing e Sincronizzazione
 
-```python
-# LLM Integration (Ollama + qwen3-vl:2b)
-LLM_ENABLED: bool = True
-LLM_HOST: str = "http://localhost:11434"
-LLM_MODEL: str = "qwen3-vl:2b"
-LLM_TEMPERATURE: float = 0.3  # Temperature più bassa per risposte consistenti
-LLM_TIMEOUT: float = 15.0  # Tempo aumentato per elaborazione vision
-LLM_MIN_INTERVAL_MS: int = 2000  # Intervallo aumentato a 2 secondi
-LLM_MAX_CALLS_PER_MINUTE: int = 30  # Chiamate ridotte per evitare sovraccarico
-LLM_CACHE_TTL_SECONDS: int = 20  # Cache aumentata per riutilizzo risposte
-LLM_USE_VISION: bool = True  # Screenshot analysis
-LLM_USE_FOR_EXPLORATION: bool = True
-LLM_USE_FOR_BATTLE: bool = True
-LLM_USE_FOR_MENU: bool = False
-LLM_RETRY_ATTEMPTS: int = 2  # Numero di tentativi per richieste fallite
-```
+L'agente rispetta i tempi del gioco Game Boy:
+- **Frame Rate**: 59.73 FPS (la velocità originale del Game Boy)
+- **Durata Animazioni**: Aspetta il completamento delle animazioni (16 frame per passo)
+- **Input Windows**: Mantiene i pulsanti premuti per 3-6 frame per garantire registrazione
+- **Safety Factor**: 25% di margine per compensare il lag dell'emulazione
 
-### Setup LLM
+### Apprendimento Adattivo
 
-Per utilizzare correttamente l'integrazione LLM, segui questi passaggi:
+L'agente migliora nel tempo attraverso:
+- **Memoria di Successo**: Ricorda quali sequenze hanno portato a progressi
+- **Pattern Efficaci**: Identifica strategie vincenti per situazioni specifiche
+- **Critica Periodica**: Ogni 50 step, valuta se l'approccio sta funzionando
+- **Adattamento Strategico**: Modifica obiettivi se non sta facendo progressi
 
-1. **Installa Ollama**: Visita [ollama.com](https://ollama.com/) e scarica Ollama per il tuo sistema
-2. **Avvia il servizio Ollama**:
-   ```bash
-   ollama serve
-   ```
-3. **Scarica il modello richiesto**:
-   ```bash
-   ollama pull qwen3-vl:2b
-   ```
-4. **Testa la connessione**:
-   ```bash
-   python test_llm_connection.py
-   ```
+### Gestione degli Errori
 
-Se il LLM non e' disponibile, il sistema utilizzera automaticamente la rete RL come fallback, garantendo che l'agente continui a funzionare anche senza LLM.
+Il sistema include robustezza attraverso:
+- **Rate Limiting**: Massimo 600 chiamate LLM al minuto per evitare sovraccarico
+- **Timeout Management**: 60 secondi massimi per risposte LLM
+- **Fallback Gerarchico**: 4 livelli di fallback (LLM → Template → Euristiche → Azione casuale)
+- **Recovery da Crash**: Ripristino dello stato dopo errori critici
 
-### Vision Encoder
+## Requisiti
 
-Architettura basata su DeepSeek-VL2 ([arXiv:2412.10302](https://arxiv.org/abs/2412.10302)):
+*   **Python 3.10+**
+*   **Ollama**: Installato e in esecuzione localmente.
+*   **ROM di Pokémon Rosso**: File `.gb` (da posizionare in `roms/`).
 
-```
-Input Frame (144x160)
-    |
-CNN Backbone (Conv + BatchNorm + GELU)
-    |
-PixelShuffleAdaptor (compressione 2x2)
-    |
-Multi-head Latent Attention (MLA)
-    |
-Policy Head -> 9 azioni
-Value Head  -> stima valore
-```
+## Installazione
 
-### Tre Reti Specializzate
+1.  **Clona il repository**:
+    ```bash
+    git clone https://github.com/tuo-username/Pokeagent-GameBoy.git
+    cd Pokeagent-GameBoy
+    ```
 
-| Rete | Parametri | Embed Dim | MLA Layers | Uso |
-| ---- | --------- | --------- | ---------- | --- |
-| **ExplorationPPO** | ~500K | 192 | 1 | Navigazione veloce |
-| **BattlePPO** | ~900K | 320 | 3 | Strategie complesse |
-| **MenuPPO** | ~350K | 128 | 1 | UI semplici |
+2.  **Crea un ambiente virtuale (opzionale ma consigliato)**:
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
 
-Totale: 1.76M parametri
+3.  **Installa le dipendenze**:
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-## Avvio Rapido
+4.  **Prepara Ollama**:
+    Assicurati di avere Ollama installato e scarica il modello richiesto (o modificalo in `config.py`):
+    ```bash
+    ollama pull qwen2.5:0.5b
+    ```
 
-### Prerequisiti
+5.  **Aggiungi la ROM**:
+    Copia la tua ROM di Pokémon Rosso (es. `Pokemon Red.gb`) nella cartella `roms/`.
 
-1. **Python 3.8+**
-2. **Ollama** (per LLM integration):
-   ```bash
-   # Installa Ollama: https://ollama.ai/download
-   # Scarica il modello vision
-   ollama pull qwen3-vl:2b
+## Utilizzo
 
-   # Avvia Ollama server
-   ollama serve
-   ```
-
-### Installazione
+Assicurati che il server Ollama sia attivo, poi avvia l'agente:
 
 ```bash
-# Clona il repository
-git clone https://github.com/yourusername/Pokeagent-GameBoy.git
-cd Pokeagent-GameBoy
-
-# Installa con pip
-pip install -e .
-
-# Per supporto GPU (NVIDIA)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-
-# Verifica che tutte le dipendenze siano installate correttamente
-python check_dependencies.py
+python3 main.py
 ```
 
-### Esecuzione dell'Agente
+### Opzioni da riga di comando (non implementate nel main attuale ma configurabili in `config.py`)
+Attualmente la configurazione principale avviene tramite il file `config.py`.
 
-**IMPORTANTE**: Devi fornire il tuo file ROM Pokemon (`.gb` o `.gbc`).
+## Configurazione Avanzata (`config.py`)
 
-Per prima cosa, posiziona il tuo file ROM Pokemon nella directory `roms/`:
+Puoi personalizzare il comportamento dell'agente modificando `config.py`:
 
-```bash
-# Sposta il tuo file ROM nella directory roms/
-mv Pokemon\ Red.gb roms/
-```
+*   `LLM_MODEL`: Modello Ollama da utilizzare (default: `qwen2.5:0.5b`).
+*   `EMULATION_SPEED`: Velocità di emulazione (default: `1`x).
+*   `HEADLESS`: Imposta a `True` per eseguire senza finestra grafica.
+*   `RENDER_EVERY_N_FRAMES`: Frequenza di rendering (per velocizzare in modalità headless).
+*   `LLM_MAX_CALLS_PER_MINUTE`: Limite chiamate API per evitare sovraccarico.
 
-Il percorso predefinito è `roms/Pokemon Red.gb`, ma puoi specificare un percorso personalizzato:
+## Contribuire
 
-```bash
-# Esecuzione con il percorso predefinito
-python -m src
-
-# Specifica un percorso personalizzato per la ROM
-python -m src --rom-path pokemon_red.gb
-
-# Con opzioni aggiuntive
-python -m src --rom-path pokemon_red.gb --headless --speed 2
-python -m src --rom-path pokemon.gb --log-level DEBUG
-```
-
-**Opzioni CLI disponibili**:
-- `--rom-path PATH` - **[RICHIESTO]** Percorso al file ROM Pokemon
-- `--headless` - Esegui senza finestra grafica (migliora FPS)
-- `--speed N` - Velocita emulazione (0=illimitata, 1=normale, 2=2x). Default: 0
-- `--log-level LEVEL` - Livello logging (DEBUG, INFO, WARNING, ERROR)
-
-### Controlli
-
-Durante il training:
-- `ESC` - Esci e salva progresso
-- `SPACE` - Pausa/Riprendi training
-- `+` / `=` - Aumenta velocita emulazione
-- `-` / `_` - Diminuisci velocita emulazione
-
-**Nota per macOS**: A causa di limitazioni del modulo `keyboard`, potrebbero verificarsi errori di permessi o problemi con alcuni tasti. In tal caso:
-- Esegui con l'opzione `--headless` per evitare problemi di controllo da tastiera
-- Oppure esegui con `--speed 1` per limitare la velocità e ridurre l'uso dei controlli da tastiera
-- Se necessario, puoi anche disabilitare completamente i controlli da tastiera modificando il codice sorgente
-
-## Configurazione
-
-### Velocita e Rendering ([src/config.py](src/config.py))
-
-```python
-EMULATION_SPEED: int = 0  # 0=illimitata, 1=normale, 2=2x, etc.
-RENDER_ENABLED: bool = True
-FRAMESKIP_MAP: Dict[str, int] = {
-    "dialogue": 6,
-    "battle": 10,
-    "menu": 6,
-    "exploring": 8,
-    "base": 6
-}
-```
-
-### LLM Configuration
-
-```python
-# Disabilita LLM per training puro RL
-LLM_ENABLED: bool = False
-
-# Cambia modello
-LLM_MODEL: str = "llama3.2-vision:latest"  # Alternativa
-
-# Aumenta frequenza chiamate
-LLM_MIN_INTERVAL_MS: int = 500  # Ogni 500ms
-
-# Disabilita vision per latenza minore
-LLM_USE_VISION: bool = False
-```
-
-### Modelli LLM Compatibili
-
-| Modello | Vision | Latenza | Qualita |
-|---------|--------|---------|---------|
-| `qwen3-vl:2b` | Si | ~500ms | Buona |
-| `llama3.2-vision:latest` | Si | ~800ms | Ottima |
-| `mistral:7b` | No | ~200ms | Buona (solo testo) |
-
-## Caratteristiche
-
-### Reinforcement Learning
-- **GRPO** (Group Relative Policy Optimization) con normalizzazione advantage
-- **PPO** con clipped surrogate loss
-- **World Model** per imagination training
-- **GAE-lambda** per stima vantaggi
-- **Entropy scheduling** adattivo
-
-### LLM Integration
-
-- **Primary decision maker**: LLM decide le azioni, RL e' fallback
-- **Async non-blocking**: Thread separato per chiamate HTTP
-- **Vision analysis**: Screenshot encoding per contesto visivo
-- **Strategic reasoning**: Analisi situazione per esplorazione e battaglia
-- **Rate limiting**: Bilanciamento tra frequenza e latenza
-- **Caching**: Riuso risposte per stati simili
-
-### Intelligenza di Gioco
-- **Lettura memoria** per tracciamento stato di gioco
-- **Rilevamento eventi** (medaglie, battaglie, Pokemon catturati)
-- **Rilevamento automatico stato** (battaglia/menu/dialogo/esplorazione)
-- **Esplorazione guidata dalla curiosita**
-- **Meccanismi anti-grinding**
-
-## Confronto Performance
-
-| Metrica | V4.0 (GRPO) | **V5.0 (GRPO + LLM)** |
-|---------|-------------|----------------------|
-| **Prima medaglia** | ~8 min | **~6 min** |
-| **Primo Pokemon** | ~5 min | **~4 min** |
-| **Memoria GPU** | ~600MB | **~650MB** |
-| **FPS (con LLM)** | N/A | **~1000 FPS** |
-| **Decision quality** | RL only | **RL + Strategic reasoning** |
-
-## Output Esempio
-
-```text
-[INFO] ROM: C:\Games\Pokemon Red.gb
-[INFO] Emulation speed: unlimited
-[LLM] Connected to Ollama, model: qwen3-vl:2b
-[LLM] Ready
-[LOAD] Checkpoint loaded: episode 0, frame 131022
-
-[PERF] 1524.2fps Frame:135000 Reward:18.32
-[GAME] Badges:1 Pokemon:8 Map:54 Pos:(12,8)
-[DECISION] LLM:892 (74%) | RL fallback:315
-[REWARD] {'badges': 2000, 'pokemon': 150, 'exploration': 88} = 2238.00
-```
-
-
-## Risoluzione Problemi
-
-### LLM non funziona
-
-**Problema**: `[LLM] Cannot connect to Ollama at http://localhost:11434`
-
-```bash
-# Avvia Ollama server
-ollama serve
-```
-
-**Problema**: `[LLM] Model 'qwen3-vl:2b' not found. Available: [...]`
-
-```bash
-# Scarica il modello
-ollama pull qwen3-vl:2b
-```
-
-**Problema**: LLM non prende decisioni (0 su 2000), con molti fallback RL
-
-Possibili cause:
-1. Ollama non e' in esecuzione
-2. Modello non disponibile
-3. Richieste LLM falliscono ripetutamente
-
-Soluzione:
-```bash
-# Testa la connessione LLM
-python test_llm_connection.py
-
-# Verifica che Ollama sia in esecuzione
-ollama serve
-
-# Verifica che il modello sia disponibile
-ollama list
-```
-
-**Problema**: Richieste LLM falliscono con messaggi tipo "Request returned no response"
-
-Questo indica che le richieste all'LLM stanno fallendo. Il sistema ha ora un meccanismo di retry configurabile:
-- Controlla la connessione a Ollama
-- Aumenta `LLM_RETRY_ATTEMPTS` in `src/cfg.py` se necessario
-- Controlla i log per dettagli sui fallimenti
-
-**Problema**: Lag durante il gioco
-
-```python
-# In config.py, aumenta intervallo chiamate
-LLM_MIN_INTERVAL_MS: int = 3000  # Ogni 3 secondi
-
-# Oppure disabilita vision
-LLM_USE_VISION: bool = False
-```
-
-### Problemi con il modulo Keyboard (macOS)
-
-**Problema**: Errori tipo `OSError: Error 13 - Must be run as administrator` o `ValueError: Key '+' is not mapped to any known key`
-
-Questo e' un problema comune su macOS con il modulo `keyboard`. Soluzioni:
-
-1. **Esegui in modalita headless** (consigliato):
-   ```bash
-   python -m src --headless
-   ```
-
-2. **Esegui con velocita limitata**:
-   ```bash
-   python -m src --speed 1
-   ```
-
-3. **Se hai bisogno di accesso completo da tastiera su macOS**, concedi i permessi in:
-   - Impostazioni di Sistema > Privacy e Sicurezza > Accessibilita'
-   - Aggiungi il terminale o l'applicazione che stai usando
-
-### Checkpoint incompatibile
-
-**Problema**: `exploration network architecture changed, training from scratch`
-
-Questo messaggio indica che l'architettura della rete e' cambiata rispetto al checkpoint salvato. Il sistema gestisce automaticamente questa situazione avviando un nuovo training. Per forzare un reset completo, elimina il file checkpoint:
-
-```bash
-del "pokemon_ai_saves_Pokemon Red\model_ppo.pth"
-```
-
-### Problemi Performance
-
-**Problema**: FPS basso
-- Usa `--headless` per disabilitare rendering
-- Disabilita LLM: `LLM_ENABLED: bool = False`
-- Aumenta `LLM_MIN_INTERVAL_MS`
-
-**Problema**: Memoria GPU elevata
-- Riduci `FRAME_STACK_SIZE`
-- Usa modello LLM piu piccolo
-
-## Gestione Modelli Ollama
-
-```bash
-# Lista modelli installati
-ollama list
-
-# Scarica nuovo modello
-ollama pull qwen3-vl:2b
-
-# Rimuovi modello
-ollama rm qwen3-vl:2b
-
-# Info modello
-ollama show qwen3-vl:2b
-```
+Sentiti libero di aprire Issue o Pull Request per migliorare l'agente, aggiungere nuove funzionalità alla Knowledge Base o ottimizzare i prompt!
 
 ## Licenza
 
-Licenza MIT - vedi [LICENSE](LICENSE)
-
-**Importante**: Gli utenti sono responsabili di ottenere legalmente i file ROM. Pokemon e un marchio di Nintendo/Game Freak/The Pokemon Company.
-
-## Riconoscimenti
-
-- [PyBoy](https://github.com/Baekalfen/PyBoy) - Emulatore Game Boy
-- [PyTorch](https://pytorch.org/) - Framework deep learning
-- [Ollama](https://ollama.ai/) - LLM locale
-- [Qwen3-VL](https://github.com/QwenLM/Qwen-VL) - Vision-Language Model
-- [PPO Paper](https://arxiv.org/abs/1707.06347) - Proximal Policy Optimization
-- [DeepSeek-VL2 Paper](https://arxiv.org/abs/2412.10302) - Vision Encoder
-- [DeepSeek-R1 Paper](https://arxiv.org/abs/2501.12948) - GRPO
-
----
-
-**Progetto educativo per ricerca reinforcement learning. Performance varia in base a hardware e configurazione.**
+[Inserisci qui la tua licenza, es. MIT]

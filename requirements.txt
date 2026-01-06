@@ -10,7 +10,7 @@ torchvision>=0.15.0
 numpy>=1.24.0  # Compatible with both NumPy 1.x and 2.x
 
 # Game Boy emulator
-pyboy>=1.6.0
+pyboy>=2.0.0
 
 # Image processing
 Pillow>=10.0.0
@@ -19,13 +19,20 @@ opencv-python>=4.8.0
 # Input handling
 keyboard>=0.13.5
 
-# Optional: OCR per lettura testo schermo (dialoghi, menu, nomi Pokemon)
+# Optional: OCR per lettura t
+esto schermo (dialoghi, menu, nomi Pokemon)
 # Installa con: pip install easyocr
 # NOTA: Prima esecuzione scarica modello (~100MB)
 # easyocr>=1.7.0
 
 # HTTP client for LLM integration (Ollama)
 requests>=2.31.0
+ollama>=0.2.0
+
+# LLM integration (Hugging Face)
+transformers>=4.38.2
+
+
 
 # Optional: For parallel training (future feature)
 # multiprocessing is built-in
