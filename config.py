@@ -1,7 +1,18 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Union
-import torch
+from typing import Any, Dict, List, Optional, Union
+
+
+def _default_device() -> Any:
+    try:
+        import torch
+    except Exception:
+        return "cpu"
+    return torch.device(
+        "mps"
+        if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
+        else ("cuda" if torch.cuda.is_available() else "cpu")
+    )
 
 @dataclass
 class Config:
@@ -10,7 +21,7 @@ class Config:
     EMULATION_SPEED: int = 1
     RENDER_ENABLED: bool = True
     RENDER_EVERY_N_FRAMES: int = 2
-    DEVICE: torch.device = field(default_factory=lambda: torch.device("mps" if (hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()) else ("cuda" if torch.cuda.is_available() else "cpu")))
+    DEVICE: Any = field(default_factory=_default_device)
     SAVE_DIR_PREFIX: str = "pokemon_ai_saves"
     MODEL_FILENAME: str = "model_ppo.pth"
     STATS_FILENAME: str = "stats_ppo.json"
@@ -75,6 +86,20 @@ class Config:
     LLM_RETRY_ATTEMPTS: int = 2
     LLM_CONSECUTIVE_FAILURE_THRESHOLD: int = 3
     LLM_FAILURE_COOLDOWN_SECONDS: int = 60
+
+    ADAPTIVE_COMPUTE_ENABLED: bool = True
+    PARALLEL_SAMPLING_ENABLED: bool = True
+    PARALLEL_SAMPLING_MIN_CANDIDATES: int = 3
+    PARALLEL_SAMPLING_MAX_CANDIDATES: int = 5
+
+    LLM_ACTION_BUDGET_EXPLORING: int = 900
+    LLM_ACTION_BUDGET_MENU: int = 1200
+    LLM_ACTION_BUDGET_BATTLE: int = 2200
+    LLM_ACTION_BUDGET_BOSS: int = 4000
+
+    LLM_PLANNING_BUDGET_DEFAULT: int = 2500
+    LLM_PLANNING_BUDGET_STRATEGIC: int = 10000
+    LLM_CRITIQUE_BUDGET: int = 800
     
     RAM_OFFSETS: Dict[str, int] = field(default_factory=lambda: {
         "player_x": 0xD362,
@@ -122,6 +147,10 @@ class Config:
             raise ValueError(f"MENU_THRESHOLD deve essere in [0.0, 1.0], ottenuto {self.MENU_THRESHOLD}")
     
     def _validate_device(self) -> None:
+        try:
+            import torch
+        except Exception:
+            return
         if not isinstance(self.DEVICE, torch.device):
             raise TypeError(f"DEVICE deve essere torch.device, ottenuto {type(self.DEVICE)}")
     

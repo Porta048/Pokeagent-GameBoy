@@ -3,6 +3,9 @@ import requests
 import json
 import re
 import hashlib
+import random
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Any, Tuple
 import base64
@@ -47,6 +50,8 @@ class OllamaLLMClient:
         self._degraded = False
         self._latency_ema_s = 0.0
         self._last_latency_s = 0.0
+        self._rate_limit_lock = threading.Lock()
+        self._state_lock = threading.Lock()
 
     def _enter_cooldown(self, error_kind: str) -> None:
         self.available = False
@@ -66,8 +71,8 @@ class OllamaLLMClient:
             total_timeout_s = 60.0
         
         connect_timeout_s = 2.0 if not is_action else 1.5
-        default_read = 30.0 if is_action else 10.0
-        read_timeout_s = min(default_read, max(1.0, total_timeout_s))
+        default_read = 30.0 if is_action else 30.0
+        read_timeout_s = max(default_read, max(1.0, total_timeout_s))
         
         return (connect_timeout_s, read_timeout_s)
 
@@ -106,6 +111,10 @@ class OllamaLLMClient:
         return raw
 
     def _check_rate_limit(self) -> bool:
+        with self._rate_limit_lock:
+            return self._check_rate_limit_locked()
+
+    def _check_rate_limit_locked(self) -> bool:
         if not self.config.use_token_bucket:
             now = time.monotonic()
             if (now - self.reset_time) > 60.0:
@@ -179,7 +188,82 @@ class OllamaLLMClient:
         pil_image.save(buffered, format="PNG")
         return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-    def generate_text(self, prompt: str, system_prompt: Optional[str] = None) -> Optional[str]:
+    def _build_payload(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: Optional[float] = None,
+        num_predict: Optional[int] = None,
+        seed: Optional[int] = None
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": float(self.config.temperature if temperature is None else temperature),
+            "stream": False
+        }
+        options: Dict[str, Any] = {}
+        if isinstance(num_predict, int) and num_predict > 0:
+            options["num_predict"] = int(num_predict)
+        if isinstance(seed, int) and seed >= 0:
+            options["seed"] = int(seed)
+        if options:
+            payload["options"] = options
+        return payload
+
+    def _parse_action_index(self, content: str) -> Optional[int]:
+        try:
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                data = json.loads(json_str)
+                action_str = str(data.get('action', '')).lower().strip()
+                thought = data.get('thought', None)
+                if isinstance(thought, str) and thought.strip():
+                    print(f"[LLM Reasoning] {thought.strip()}")
+                print(f"[LLM Decision] Action: {action_str}")
+
+                action_map = {
+                    'none': 0, 'up': 1, 'down': 2, 'left': 3, 'right': 4,
+                    'a': 5, 'b': 6, 'start': 7, 'select': 8
+                }
+                if action_str in action_map:
+                    return int(action_map[action_str])
+        except Exception as e:
+            print(f"[LLM] Error parsing JSON response: {e}, Content: {content}")
+
+        numbers = re.findall(r'\d+', content)
+        if numbers:
+            idx = int(numbers[0])
+            if 0 <= idx <= 8:
+                return idx
+
+        content_lower = content.lower()
+        if 'up' in content_lower:
+            return 1
+        if 'down' in content_lower:
+            return 2
+        if 'left' in content_lower:
+            return 3
+        if 'right' in content_lower:
+            return 4
+        if re.search(r'(^|\W)a(\W|$)', content_lower):
+            return 5
+        if re.search(r'(^|\W)b(\W|$)', content_lower):
+            return 6
+        if 'start' in content_lower:
+            return 7
+        if 'select' in content_lower:
+            return 8
+        return None
+
+    def generate_text(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        num_predict: Optional[int] = None,
+        temperature: Optional[float] = None,
+        seed: Optional[int] = None
+    ) -> Optional[str]:
         if not self._check_availability():
             return None
         if not self._check_rate_limit():
@@ -189,12 +273,7 @@ class OllamaLLMClient:
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        payload = {
-            "model": self.config.model,
-            "messages": messages,
-            "temperature": self.config.temperature,
-            "stream": False
-        }
+        payload = self._build_payload(messages, temperature=temperature, num_predict=num_predict, seed=seed)
         timeout_arg = self._request_timeout_arg()
         for attempt in range(self.config.retry_attempts + 1):
             try:
@@ -212,8 +291,9 @@ class OllamaLLMClient:
                 self.consecutive_failures = 0
                 self._last_latency_s = time.monotonic() - t0
                 self._latency_ema_s = self._latency_ema_s * 0.9 + self._last_latency_s * 0.1
-                self.last_call_time = time.monotonic()
-                self.call_count += 1
+                with self._state_lock:
+                    self.last_call_time = time.monotonic()
+                    self.call_count += 1
                 return content
             except requests.exceptions.ReadTimeout as e:
                 print(f"[LLM] Text generation timeout: {e}")
@@ -255,7 +335,17 @@ class OllamaLLMClient:
 
         return messages
 
-    def get_action(self, game_state: str, game_context: Dict, screen_image: Optional[np.ndarray], action_history: List[str]) -> Optional[int]:
+    def get_action(
+        self,
+        game_state: str,
+        game_context: Dict,
+        screen_image: Optional[np.ndarray],
+        action_history: List[str],
+        num_predict: Optional[int] = None,
+        temperature: Optional[float] = None,
+        seed: Optional[int] = None,
+        use_cache: bool = True
+    ) -> Optional[int]:
         if not self._check_availability():
             return None
 
@@ -269,12 +359,14 @@ class OllamaLLMClient:
         cache_key = self._cache_key(game_state, game_context, action_history)
         stale_cached_response: Optional[int] = None
         now_mono = time.monotonic()
-        if cache_key in self.cache:
-            cached_response, cache_time = self.cache[cache_key]
-            if (now_mono - cache_time) < float(self.config.cache_ttl_seconds):
-                self.consecutive_failures = 0
-                return cached_response
-            stale_cached_response = cached_response
+        if use_cache:
+            with self._state_lock:
+                if cache_key in self.cache:
+                    cached_response, cache_time = self.cache[cache_key]
+                    if (now_mono - cache_time) < float(self.config.cache_ttl_seconds):
+                        self.consecutive_failures = 0
+                        return cached_response
+                    stale_cached_response = cached_response
 
         if not self._check_rate_limit():
             print("[LLM] Rate limit exceeded, falling back to RL.")
@@ -282,12 +374,7 @@ class OllamaLLMClient:
 
         messages = self._construct_prompt(game_state, game_context, screen_image, action_history)
 
-        payload = {
-            "model": self.config.model,
-            "messages": messages,
-            "temperature": self.config.temperature,
-            "stream": False
-        }
+        payload = self._build_payload(messages, temperature=temperature, num_predict=num_predict, seed=seed)
 
         if self._latency_ema_s >= 2.5:
             self._degraded = True
@@ -316,70 +403,15 @@ class OllamaLLMClient:
                     print(f"[LLM] Unexpected response format: {response_data}")
                     continue
 
-                try:
-                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                    if json_match:
-                        json_str = json_match.group(0)
-                        data = json.loads(json_str)
-                        
-                        thought = data.get('thought', 'No thought provided')
-                        action_str = data.get('action', '').lower()
-                        
-                        print(f"[LLM Reasoning] {thought}")
-                        print(f"[LLM Decision] Action: {action_str}")
-                        
-                        action_map = {
-                            'none': 0, 'up': 1, 'down': 2, 'left': 3, 'right': 4, 
-                            'a': 5, 'b': 6, 'start': 7, 'select': 8
-                        }
-                        
-                        if action_str in action_map:
-                            action_index = action_map[action_str]
+                action_index = self._parse_action_index(content)
+                if isinstance(action_index, int) and 0 <= action_index <= 8:
+                    if use_cache:
+                        with self._state_lock:
                             self.cache[cache_key] = (action_index, time.monotonic())
-                            self.last_call_time = time.monotonic()
-                            self.call_count += 1
-                            return action_index
-                        else:
-                            print(f"[LLM] Invalid action string: {action_str}")
-                    else:
-                        print(f"[LLM] No JSON found in response: {content}")
-                        
-                except Exception as e:
-                    print(f"[LLM] Error parsing JSON response: {e}, Content: {content}")
-
-                numbers = re.findall(r'\d+', content)
-                if numbers:
-                    print(f"[LLM] Fallback parsing used (found numbers)")
-                    action_index = int(numbers[0])
-                    if 0 <= action_index <= 8:
-                        return action_index
-                else:
-                    print(f"[LLM] No valid action index found in response: {content}")
-                    content_lower = content.lower()
-                    if 'up' in content_lower:
-                        action_index = 1
-                    elif 'down' in content_lower:
-                        action_index = 2
-                    elif 'left' in content_lower:
-                        action_index = 3
-                    elif 'right' in content_lower:
-                        action_index = 4
-                    elif 'a' in content_lower:
-                        action_index = 5
-                    elif 'b' in content_lower:
-                        action_index = 6
-                    elif 'start' in content_lower:
-                        action_index = 7
-                    elif 'select' in content_lower:
-                        action_index = 8
-                    else:
-                        return None
-
-                    if 0 <= action_index <= 8:
-                        self.cache[cache_key] = (action_index, time.monotonic())
+                    with self._state_lock:
                         self.last_call_time = time.monotonic()
                         self.call_count += 1
-                        return action_index
+                    return action_index
 
                 return None
             except requests.exceptions.ReadTimeout as e:
@@ -409,3 +441,43 @@ class OllamaLLMClient:
                 break
 
         return None
+
+    def get_action_candidates(
+        self,
+        game_state: str,
+        game_context: Dict,
+        screen_image: Optional[np.ndarray],
+        action_history: List[str],
+        n_candidates: int = 3,
+        num_predict: Optional[int] = None,
+        temperature: Optional[float] = None
+    ) -> List[int]:
+        n = int(n_candidates)
+        if n < 1:
+            return []
+
+        seeds = [random.randint(0, 2**31 - 1) for _ in range(n)]
+        candidates: List[int] = []
+        with ThreadPoolExecutor(max_workers=n) as executor:
+            futures = [
+                executor.submit(
+                    self.get_action,
+                    game_state,
+                    game_context,
+                    screen_image,
+                    action_history,
+                    num_predict,
+                    temperature,
+                    seeds[i],
+                    False
+                )
+                for i in range(n)
+            ]
+            for fut in as_completed(futures):
+                try:
+                    res = fut.result()
+                    if isinstance(res, int) and 0 <= res <= 8:
+                        candidates.append(res)
+                except Exception as e:
+                    print(f"[LLM] Candidate generation error: {e}")
+        return candidates

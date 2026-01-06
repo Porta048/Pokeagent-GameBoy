@@ -1,6 +1,7 @@
 # agent.py
 import json
 import logging
+import math
 import re
 from typing import Dict, Any, Optional, List, Tuple
 from enum import Enum
@@ -18,6 +19,18 @@ class PlanningAgent:
     def __init__(self, llm_client):
         self.llm = llm_client
 
+    def _planning_budget(self, game_state: Dict, long_term_goal: str, knowledge_context: str) -> int:
+        if not bool(CFG.ADAPTIVE_COMPUTE_ENABLED):
+            return int(CFG.LLM_PLANNING_BUDGET_DEFAULT)
+
+        combined = f"{long_term_goal}\n{knowledge_context}\n{game_state}".lower()
+        strategic_markers = (
+            "elite", "lega", "indigo", "campione", "champion", "e4", "pre-elite", "pre elite", "plateau"
+        )
+        if any(m in combined for m in strategic_markers):
+            return int(CFG.LLM_PLANNING_BUDGET_STRATEGIC)
+        return int(CFG.LLM_PLANNING_BUDGET_DEFAULT)
+
     def formulate_goal(self, game_state: Dict, long_term_goal: str, knowledge_context: str = "") -> str:
         prompt = CFG.PLANNER_PROMPT_TEMPLATE.format(
             game_state=game_state,
@@ -27,7 +40,8 @@ class PlanningAgent:
         )
         next_goal = None
         if hasattr(self.llm, "generate_text"):
-            next_goal = self.llm.generate_text(prompt)
+            budget = self._planning_budget(game_state, long_term_goal, knowledge_context)
+            next_goal = self.llm.generate_text(prompt, num_predict=budget)
         if not next_goal:
             next_goal = "Esplora l'area, interagisci con NPC, gestisci menu e battaglie."
         candidate = next_goal.strip().splitlines()[0].strip()
@@ -98,6 +112,175 @@ class ExecutionAgent:
         print(f"[Fallback] Scelta finale: {final_choice}")
         return final_choice
 
+    def _difficulty_score(self, game_mode: str, state: Dict, task: str) -> float:
+        base = 0.0
+        if game_mode == "battle":
+            base += 2.0
+        elif game_mode == "menu":
+            base += 1.0
+        else:
+            base += 0.0
+
+        semantic = str(state.get("semantic_context", "") or "").lower()
+        location = str(state.get("location", "") or "").lower()
+        task_l = str(task or "").lower()
+        text_box = str(state.get("text_box", "") or "").lower()
+
+        markers = ("capopalestra", "palestra", "gym", "giovanni", "elite", "lega", "rival", "champion", "campione")
+        if any(m in semantic for m in markers) or any(m in location for m in markers) or any(m in task_l for m in markers):
+            base += 2.0
+        if any(m in text_box for m in ("leader", "capopalestra", "elite", "lega", "campione")):
+            base += 1.0
+
+        try:
+            opponent_level = int(state.get("opponent_level", 0) or 0)
+        except Exception:
+            opponent_level = 0
+        if opponent_level >= 40:
+            base += 1.5
+        elif opponent_level >= 20:
+            base += 0.5
+
+        try:
+            badges = int(state.get("badges", 0) or 0)
+        except Exception:
+            badges = 0
+        if badges >= 6:
+            base += 1.0
+
+        return base
+
+    def _compute_profile(self, game_mode: str, state: Dict, task: str) -> Dict[str, Any]:
+        if not bool(CFG.ADAPTIVE_COMPUTE_ENABLED):
+            return {"num_predict": None, "temperature": None, "n_candidates": 1}
+
+        score = self._difficulty_score(game_mode, state, task)
+
+        num_predict = int(CFG.LLM_ACTION_BUDGET_EXPLORING)
+        temperature = float(CFG.LLM_TEMPERATURE)
+        n_candidates = 1
+        min_candidates = 1
+        max_candidates = int(CFG.PARALLEL_SAMPLING_MAX_CANDIDATES)
+
+        if game_mode == "menu":
+            num_predict = int(CFG.LLM_ACTION_BUDGET_MENU)
+            n_candidates = 2
+            min_candidates = 2
+        elif game_mode == "battle":
+            num_predict = int(CFG.LLM_ACTION_BUDGET_BATTLE)
+            temperature = max(0.4, float(CFG.LLM_TEMPERATURE))
+            n_candidates = int(CFG.PARALLEL_SAMPLING_MIN_CANDIDATES)
+            min_candidates = int(CFG.PARALLEL_SAMPLING_MIN_CANDIDATES)
+
+        if score >= 4.0:
+            num_predict = int(CFG.LLM_ACTION_BUDGET_BOSS)
+            temperature = max(0.5, float(CFG.LLM_TEMPERATURE))
+            n_candidates = int(CFG.PARALLEL_SAMPLING_MAX_CANDIDATES)
+
+        target = 0.75 + min(0.20, 0.05 * float(score))
+        base_p = {"exploring": 0.55, "menu": 0.65, "battle": 0.70}.get(game_mode, 0.55)
+        p = max(0.12, min(0.90, float(base_p - 0.06 * min(float(score), 6.0))))
+        n_scaled = 1
+        try:
+            if 0.0 < target < 1.0 and 0.0 < p < 1.0:
+                denom = math.log(1.0 - p)
+                if denom < 0:
+                    n_scaled = int(math.ceil(math.log(1.0 - target) / denom))
+        except Exception:
+            n_scaled = 1
+
+        n_candidates = max(int(n_candidates), int(min_candidates), int(n_scaled))
+        n_candidates = min(int(max_candidates), int(n_candidates))
+
+        if hasattr(self.llm, "get_stats"):
+            stats = self.llm.get_stats() or {}
+            latency = float(stats.get("latency_ema_s", 0.0) or 0.0)
+            degraded = bool(stats.get("degraded", False))
+            available = bool(stats.get("available", True))
+            if (not available) or degraded or latency >= 2.5:
+                n_candidates = 1
+                num_predict = int(min(num_predict, int(CFG.LLM_ACTION_BUDGET_EXPLORING)))
+
+        return {
+            "num_predict": num_predict,
+            "temperature": temperature,
+            "n_candidates": max(1, int(n_candidates))
+        }
+
+    def _score_action(self, action: Optional[str], game_mode: str, state: Dict, action_history: List[str]) -> float:
+        if not action:
+            return -1e9
+        if self._would_loop(action, action_history):
+            return -1e6
+
+        score = 0.0
+        last = action_history[-1] if action_history else None
+        if action == last:
+            score -= 1.0
+
+        if game_mode == "battle":
+            if action == "a":
+                score += 3.0
+            elif action in ("up", "down"):
+                score += 1.0
+            elif action in ("start", "select"):
+                score -= 2.0
+        elif game_mode == "menu":
+            if action in ("up", "down", "left", "right"):
+                score += 1.0
+            elif action == "a":
+                score += 1.5
+            elif action == "b":
+                score += 1.0
+        else:
+            if action in ("up", "down", "left", "right"):
+                score += 1.0
+            elif action == "a":
+                score += 0.5
+            elif action == "start":
+                score -= 0.5
+
+        text_box = str(state.get("text_box", "") or "").lower()
+        if text_box and "non implementato" not in text_box:
+            if action == "a":
+                score += 0.5
+            if action == "b":
+                score -= 0.2
+
+        return score
+
+    def _select_best_candidate(
+        self,
+        candidate_indices: List[int],
+        game_mode: str,
+        state: Dict,
+        action_history: List[str]
+    ) -> Optional[int]:
+        best_idx: Optional[int] = None
+        best_score = -1e18
+        seen: set[int] = set()
+        accept_score = 1e18
+        if game_mode == "battle":
+            accept_score = 3.0
+        elif game_mode == "menu":
+            accept_score = 1.5
+
+        for idx in candidate_indices:
+            if not isinstance(idx, int) or idx < 0 or idx >= len(CFG.ACTIONS):
+                continue
+            if idx in seen:
+                continue
+            seen.add(idx)
+            action = CFG.ACTIONS[idx]
+            s = self._score_action(action, game_mode, state, action_history)
+            if s > best_score:
+                best_score = s
+                best_idx = idx
+                if s >= accept_score:
+                    return best_idx
+
+        return best_idx
+
     def execute_task(self, task_description: str, game_state: Dict, screen_image_np, action_history: List[str]) -> Dict[str, Any]:
         self.step_count = 0
         outcome = {"success": False, "steps": [], "reason": ""}
@@ -134,9 +317,37 @@ class ExecutionAgent:
         action_index = None
         llm_stats = None
         
-        if hasattr(self.llm, "get_action"):
+        profile = self._compute_profile(game_mode, state, task)
+        num_predict = profile.get("num_predict", None)
+        temperature = profile.get("temperature", None)
+        n_candidates = int(profile.get("n_candidates", 1) or 1)
+
+        if bool(CFG.PARALLEL_SAMPLING_ENABLED) and n_candidates > 1 and hasattr(self.llm, "get_action_candidates"):
             game_context = {"goal": task, **state}
-            action_index = self.llm.get_action(game_mode, game_context, screen_image_np, action_history[-20:])
+            candidates = self.llm.get_action_candidates(
+                game_mode,
+                game_context,
+                screen_image_np,
+                action_history[-20:],
+                n_candidates=n_candidates,
+                num_predict=num_predict,
+                temperature=temperature
+            )
+            chosen = self._select_best_candidate(candidates, game_mode, state, action_history)
+            if chosen is None and candidates:
+                chosen = candidates[0]
+            action_index = chosen
+            print(f"[Agente] Candidate actions: {candidates} -> chosen: {action_index}")
+        elif hasattr(self.llm, "get_action"):
+            game_context = {"goal": task, **state}
+            action_index = self.llm.get_action(
+                game_mode,
+                game_context,
+                screen_image_np,
+                action_history[-20:],
+                num_predict=num_predict,
+                temperature=temperature
+            )
             if hasattr(self.llm, 'get_stats'):
                 llm_stats = self.llm.get_stats()
                 print(f"[Agente] LLM stats: {llm_stats}")
@@ -181,7 +392,7 @@ class CritiqueAgent:
         """
         critique_response = None
         if hasattr(self.llm, "generate_text"):
-            critique_response = self.llm.generate_text(prompt)
+            critique_response = self.llm.generate_text(prompt, num_predict=int(CFG.LLM_CRITIQUE_BUDGET))
         if not critique_response:
             critique_response = "NO"
 

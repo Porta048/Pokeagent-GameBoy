@@ -16,6 +16,7 @@ The agent uses a hybrid approach combining:
     *   **Critique**: Periodically evaluates action success and adapts strategy.
 *   **Local LLM Integration**: Support for models via Ollama (default: `qwen2.5:0.5b` for speed and efficiency).
 *   **Chain of Thought (CoT)**: The agent "thinks" before acting, explaining the reasoning behind its choices (visible in logs).
+*   **Test-Time Compute Scaling**: Dynamically increases parallel LLM action sampling (best-of-N) for harder situations.
 *   **Semantic Knowledge Base**: The system understands the game map, area connections, and main objectives.
 *   **Intelligent Fallback Management**: If the LLM is slow or unavailable, the agent uses heuristic logic to avoid getting stuck.
 *   **GUI Synchronization**: Optimized to synchronize agent actions with game animations.
@@ -51,6 +52,11 @@ The agent adapts its behavior based on the situation:
 - **Battle Mode**: Type strategies, HP management, Pokémon switching
 - **Menu Mode**: Efficient navigation through options
 - **Dialogue Mode**: Progression through conversations
+
+#### Test-Time Compute Scaling (Best-of-N)
+For each action decision, the agent can sample multiple candidate actions in parallel from the LLM and pick the best one according to heuristics. The number of candidates is adjusted dynamically based on game mode and estimated difficulty.
+
+When the LLM becomes slow or degraded, the agent reduces parallel sampling to keep the loop responsive.
 
 #### Anti-Loop System
 To avoid getting stuck, the agent implements:
@@ -146,6 +152,10 @@ You can customize the agent's behavior by modifying `config.py`:
 *   `HEADLESS`: Set to `True` to run without a graphical window.
 *   `RENDER_EVERY_N_FRAMES`: Rendering frequency (to speed up headless mode).
 *   `LLM_MAX_CALLS_PER_MINUTE`: API call limit to avoid overload.
+*   `ADAPTIVE_COMPUTE_ENABLED`: Enables dynamic action compute allocation.
+*   `PARALLEL_SAMPLING_ENABLED`: Enables best-of-N parallel action sampling.
+*   `PARALLEL_SAMPLING_MIN_CANDIDATES` / `PARALLEL_SAMPLING_MAX_CANDIDATES`: Bounds for parallel sampling.
+*   `LLM_ACTION_BUDGET_*`: Token budgets per mode (exploring/menu/battle/boss).
 
 ## Contributing
 

@@ -135,7 +135,13 @@ class EmulatorHarness:
             "location": f"Mappa {ram_data.get('current_map', 0)} a ({ram_data.get('player_x', 0)}, {ram_data.get('player_y', 0)})",
             "in_battle": ram_data.get('in_battle_flag', 0) == 1,
             "menu_open": ram_data.get('menu_flag', 0) == 1,
-            "text_box": self._extract_text_from_screenshot(screenshot)
+            "text_box": self._extract_text_from_screenshot(screenshot),
+            "badges": int(ram_data.get("badges", 0) or 0),
+            "money": int(ram_data.get("money", 0) or 0),
+            "party_count": int(ram_data.get("party_count", 0) or 0),
+            "opponent_level": int(ram_data.get("opponent_level", 0) or 0),
+            "opponent_hp_current": int(ram_data.get("opponent_hp_current", 0) or 0),
+            "opponent_hp_max": int(ram_data.get("opponent_hp_max", 0) or 0)
         }
         return parsed
 
