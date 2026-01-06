@@ -29,15 +29,7 @@ class ActionTimingParams:
     TEXT_PRINT_DELAY_F: int = 2
     
     def calculate_frames(self, action_type: str) -> Tuple[int, int]:
-        """
-        Calcola hold_frames e wait_frames per un tipo di azione specifico.
-        
-        Args:
-            action_type: 'move', 'menu', 'interact'
-            
-        Returns:
-            Tuple[int, int]: (hold_frames, wait_frames)
-        """
+
         if action_type == 'move':
             hold = math.ceil(self.INPUT_POLL_WINDOW_F * 2.0)
             wait = math.ceil(self.WALK_DURATION_F * self.SAFETY_FACTOR)
