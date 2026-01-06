@@ -1,159 +1,156 @@
 # PokéAgent GameBoy
 
-Un agente AI autonomo progettato per giocare a Pokémon Rosso sul Game Boy utilizzando **PyBoy** per l'emulazione e **LLM (Large Language Models)** locali (tramite Ollama) per il ragionamento decisionale.
+An autonomous AI agent designed to play Pokémon Red on Game Boy using **PyBoy** for emulation and local **LLMs (Large Language Models)** (via Ollama) for decision reasoning.
 
-L'agente utilizza un approccio ibrido che combina:
-- **Visione Computerizzata**: Analisi dello schermo di gioco.
-- **Ragionamento LLM (Chain of Thought)**: Pianificazione strategica basata sul contesto.
-- **Knowledge Base**: Database di conoscenze sul gioco (mappe, obiettivi, debolezze tipi).
-- **Memoria Ibrida**: Memoria a breve termine per il contesto immediato e a lungo termine per i progressi.
+The agent uses a hybrid approach combining:
+- **Computer Vision**: Analysis of the game screen.
+- **LLM Reasoning (Chain of Thought)**: Strategic planning based on context.
+- **Knowledge Base**: Database of game knowledge (maps, objectives, type weaknesses).
+- **Hybrid Memory**: Short-term memory for immediate context and long-term memory for progress tracking.
 
-## Caratteristiche Principali
+## Key Features
 
-*   **Architettura a 3 Fasi**:
-    *   **Planning**: Formula obiettivi a breve termine basati sullo stato attuale e sulla Knowledge Base.
-    *   **Execution**: Traduce gli obiettivi in sequenze di azioni precise, gestendo movimenti e menu.
-    *   **Critique**: Valuta periodicamente il successo delle azioni e adatta la strategia.
-*   **Integrazione LLM Locale**: Supporto per modelli via Ollama (default: `qwen2.5:0.5b` per velocità ed efficienza).
-*   **Chain of Thought (CoT)**: L'agente "pensa" prima di agire, spiegando il motivo delle sue scelte (visibile nei log).
-*   **Knowledge Base Semantica**: Il sistema conosce la mappa del gioco, le connessioni tra le aree e gli obiettivi principali.
-*   **Gestione Intelligente dei Fallback**: Se l'LLM è lento o non disponibile, l'agente usa logiche euristiche per evitare di bloccarsi.
-*   **Sincronizzazione GUI**: Ottimizzato per sincronizzare le azioni dell'agente con le animazioni del gioco.
+*   **3-Phase Architecture**:
+    *   **Planning**: Formulates short-term goals based on current state and Knowledge Base.
+    *   **Execution**: Translates goals into precise action sequences, handling movement and menus.
+    *   **Critique**: Periodically evaluates action success and adapts strategy.
+*   **Local LLM Integration**: Support for models via Ollama (default: `qwen2.5:0.5b` for speed and efficiency).
+*   **Chain of Thought (CoT)**: The agent "thinks" before acting, explaining the reasoning behind its choices (visible in logs).
+*   **Semantic Knowledge Base**: The system understands the game map, area connections, and main objectives.
+*   **Intelligent Fallback Management**: If the LLM is slow or unavailable, the agent uses heuristic logic to avoid getting stuck.
+*   **GUI Synchronization**: Optimized to synchronize agent actions with game animations.
 
-## Logica di Gioco del Modello
+## Model Gameplay Logic
 
-### Come l'Agente Prende Decisioni
+### How the Agent Makes Decisions
 
-L'agente opera attraverso un ciclo continuo di **percezione → pianificazione → azione → riflessione**:
+The agent operates through a continuous cycle of **perception → planning → action → reflection**:
 
-1. **Analisi del Contesto**: Ogni 25 step, l'agente analizza:
-   - Posizione del giocatore nella mappa corrente
-   - Stato della squadra Pokémon (HP, livelli, condizioni)
-   - Modalità di gioco attiva (esplorazione, battaglia, menu, dialogo)
-   - Obiettivi a lungo termine (es. "Sconfiggi la Lega Pokémon")
+1. **Context Analysis**: Every 25 steps, the agent analyzes:
+   - Player position in the current map
+   - Pokémon team state (HP, levels, conditions)
+   - Active game mode (exploration, battle, menu, dialogue)
+   - Long-term goals (e.g., "Defeat the Pokémon League")
 
-2. **Formulazione degli Obiettivi**: Basandosi sul contesto, l'agente genera obiettivi specifici come:
-   - *"Esplora l'area per trovare oggetti utili"*
-   - *"Cura i Pokémon feriti al Centro Pokémon"*
-   - *"Affronta l'Allenatore sulla route 24"*
+2. **Goal Formulation**: Based on context, the agent generates specific objectives such as:
+   - *"Explore the area to find useful items"*
+   - *"Heal injured Pokémon at the Pokémon Center"*
+   - *"Battle the Trainer on Route 24"*
 
-3. **Selezione delle Azioni**: L'agente considera 9 azioni possibili:
-   - Movimento: su, giù, sinistra, destra
-   - Interazioni: A, B, START, SELECT
-   - Nessuna azione (attesa)
+3. **Action Selection**: The agent considers 9 possible actions:
+   - Movement: up, down, left, right
+   - Interactions: A, B, START, SELECT
+   - No action (wait)
 
-### Strategie di Gioco Intelligenti
+### Intelligent Gameplay Strategies
 
-#### Riconoscimento delle Modalità
-L'agente adatta il suo comportamento in base alla situazione:
+#### Mode Recognition
+The agent adapts its behavior based on the situation:
 
-- **Modalità Esplorazione**: Movimenti variati, ricerca di oggetti, interazione con NPC
-- **Modalità Battaglia**: Strategie di tipo, gestione HP, cambi Pokémon
-- **Modalità Menu**: Navigazione efficiente tra le opzioni
-- **Modalità Dialogo**: Progressione attraverso le conversazioni
+- **Exploration Mode**: Varied movements, item searching, NPC interaction
+- **Battle Mode**: Type strategies, HP management, Pokémon switching
+- **Menu Mode**: Efficient navigation through options
+- **Dialogue Mode**: Progression through conversations
 
 #### Anti-Loop System
-Per evitare di rimanere bloccati, l'agente implementa:
-- **Pattern Detection**: Riconosce sequenze ripetitive (es. su-giù-su-giù)
-- **Circular Movement Detection**: Identifica movimenti circolari che indicano essere bloccati
-- **Alternating Pattern Prevention**: Evita pattern A-B-A-B che non portano progressione
-- **Exploration Boost**: Dopo 3-4 tentativi falliti, aumenta la varietà delle azioni
+To avoid getting stuck, the agent implements:
+- **Pattern Detection**: Recognizes repetitive sequences (e.g., up-down-up-down)
+- **Circular Movement Detection**: Identifies circular movements indicating being stuck
+- **Alternating Pattern Prevention**: Avoids A-B-A-B patterns that yield no progress
+- **Exploration Boost**: After 3-4 failed attempts, increases action variety
 
-#### Sistema di Fallback Ibrido
-Quando l'LLM non è disponibile o lento:
+#### Hybrid Fallback System
+When the LLM is unavailable or slow:
 
-1. **Strategia Contestuale**: Seleziona azioni appropriate alla modalità
-   - In battaglia: priorità a "A" per attaccare, "su/giù" per selezionare mosse
-   - Nei menu: "B" per tornare indietro, navigazione direzionale
-   - In esplorazione: movimenti cardinali con preferenza per nuove direzioni
+1. **Contextual Strategy**: Selects actions appropriate to the mode
+   - In battle: priority to "A" to attack, "up/down" to select moves
+   - In menus: "B" to go back, directional navigation
+   - In exploration: cardinal movements with preference for new directions
 
-2. **Memoria di Pattern**: Ricorda quali azioni hanno funzionato in contesti simili
+2. **Pattern Memory**: Remembers which actions worked in similar contexts
 
-3. **Euristica di Esplorazione**: Preferisce direzioni non esplorate recentemente
+3. **Exploration Heuristic**: Prefers directions not recently explored
 
-### Timing e Sincronizzazione
+### Timing and Synchronization
 
-L'agente rispetta i tempi del gioco Game Boy:
-- **Frame Rate**: 59.73 FPS (la velocità originale del Game Boy)
-- **Durata Animazioni**: Aspetta il completamento delle animazioni (16 frame per passo)
-- **Input Windows**: Mantiene i pulsanti premuti per 3-6 frame per garantire registrazione
-- **Safety Factor**: 25% di margine per compensare il lag dell'emulazione
+The agent respects Game Boy timing:
+- **Frame Rate**: 59.73 FPS (original Game Boy speed)
+- **Animation Duration**: Waits for animation completion (16 frames per step)
+- **Input Windows**: Holds buttons for 3-6 frames to ensure registration
+- **Safety Factor**: 25% margin to compensate for emulation lag
 
-### Apprendimento Adattivo
+### Adaptive Learning
 
-L'agente migliora nel tempo attraverso:
-- **Memoria di Successo**: Ricorda quali sequenze hanno portato a progressi
-- **Pattern Efficaci**: Identifica strategie vincenti per situazioni specifiche
-- **Critica Periodica**: Ogni 50 step, valuta se l'approccio sta funzionando
-- **Adattamento Strategico**: Modifica obiettivi se non sta facendo progressi
+The agent improves over time through:
+- **Success Memory**: Remembers sequences that led to progress
+- **Effective Patterns**: Identifies winning strategies for specific situations
+- **Periodic Critique**: Every 50 steps, evaluates if the approach is working
+- **Strategic Adaptation**: Modifies goals if no progress is being made
 
-### Gestione degli Errori
+### Error Management
 
-Il sistema include robustezza attraverso:
-- **Rate Limiting**: Massimo 600 chiamate LLM al minuto per evitare sovraccarico
-- **Timeout Management**: 60 secondi massimi per risposte LLM
-- **Fallback Gerarchico**: 4 livelli di fallback (LLM → Template → Euristiche → Azione casuale)
-- **Recovery da Crash**: Ripristino dello stato dopo errori critici
+The system includes robustness through:
+- **Rate Limiting**: Max 600 LLM calls per minute to avoid overload
+- **Timeout Management**: 60 seconds max for LLM responses
+- **Hierarchical Fallback**: 4 levels of fallback (LLM → Template → Heuristics → Random Action)
+- **Crash Recovery**: State restoration after critical errors
 
-## Requisiti
+## Requirements
 
 *   **Python 3.10+**
-*   **Ollama**: Installato e in esecuzione localmente.
-*   **ROM di Pokémon Rosso**: File `.gb` (da posizionare in `roms/`).
+*   **Ollama**: Installed and running locally.
+*   **Pokémon Red ROM**: `.gb` file (to be placed in `roms/`).
 
-## Installazione
+## Installation
 
-1.  **Clona il repository**:
+1.  **Clone the repository**:
     ```bash
-    git clone https://github.com/tuo-username/Pokeagent-GameBoy.git
+    git clone https://github.com/your-username/Pokeagent-GameBoy.git
     cd Pokeagent-GameBoy
     ```
 
-2.  **Crea un ambiente virtuale (opzionale ma consigliato)**:
+2.  **Create a virtual environment (optional but recommended)**:
     ```bash
     python3 -m venv venv
     source venv/bin/activate
     ```
 
-3.  **Installa le dipendenze**:
+3.  **Install dependencies**:
     ```bash
     pip install -r requirements.txt
     ```
 
-4.  **Prepara Ollama**:
-    Assicurati di avere Ollama installato e scarica il modello richiesto (o modificalo in `config.py`):
+4.  **Prepare Ollama**:
+    Ensure Ollama is installed and pull the required model (or modify it in `config.py`):
     ```bash
     ollama pull qwen2.5:0.5b
     ```
 
-5.  **Aggiungi la ROM**:
-    Copia la tua ROM di Pokémon Rosso (es. `Pokemon Red.gb`) nella cartella `roms/`.
+5.  **Add the ROM**:
+    Copy your Pokémon Red ROM (e.g., `Pokemon Red.gb`) into the `roms/` folder.
 
-## Utilizzo
+## Usage
 
-Assicurati che il server Ollama sia attivo, poi avvia l'agente:
+Ensure the Ollama server is running, then start the agent:
 
 ```bash
 python3 main.py
 ```
 
-### Opzioni da riga di comando (non implementate nel main attuale ma configurabili in `config.py`)
-Attualmente la configurazione principale avviene tramite il file `config.py`.
+## Advanced Configuration (`config.py`)
 
-## Configurazione Avanzata (`config.py`)
+You can customize the agent's behavior by modifying `config.py`:
 
-Puoi personalizzare il comportamento dell'agente modificando `config.py`:
+*   `LLM_MODEL`: Ollama model to use (default: `qwen2.5:0.5b`).
+*   `EMULATION_SPEED`: Emulation speed (default: `1`x).
+*   `HEADLESS`: Set to `True` to run without a graphical window.
+*   `RENDER_EVERY_N_FRAMES`: Rendering frequency (to speed up headless mode).
+*   `LLM_MAX_CALLS_PER_MINUTE`: API call limit to avoid overload.
 
-*   `LLM_MODEL`: Modello Ollama da utilizzare (default: `qwen2.5:0.5b`).
-*   `EMULATION_SPEED`: Velocità di emulazione (default: `1`x).
-*   `HEADLESS`: Imposta a `True` per eseguire senza finestra grafica.
-*   `RENDER_EVERY_N_FRAMES`: Frequenza di rendering (per velocizzare in modalità headless).
-*   `LLM_MAX_CALLS_PER_MINUTE`: Limite chiamate API per evitare sovraccarico.
+## Contributing
 
-## Contribuire
+Feel free to open Issues or Pull Requests to improve the agent, add new features to the Knowledge Base, or optimize prompts!
 
-Sentiti libero di aprire Issue o Pull Request per migliorare l'agente, aggiungere nuove funzionalità alla Knowledge Base o ottimizzare i prompt!
+## License
 
-## Licenza
-
-[Inserisci qui la tua licenza, es. MIT]
+[Insert your license here, e.g., MIT]
