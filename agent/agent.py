@@ -3,12 +3,16 @@ import json
 import logging
 import math
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Dict, Any, Optional, List, Tuple
 from enum import Enum
 
 from config import config as CFG
 from agent.memory import memory
 from agent.emulator import EmulatorHarness
+
+logger = logging.getLogger("pokeagent.agent")
 
 class AgentPhase(Enum):
     PLANNING = 1
@@ -61,7 +65,29 @@ class ExecutionAgent:
         self.step_count = 0
         if hasattr(self.llm, 'reset_state'):
             self.llm.reset_state()
-            print(f"[Agente] Stato LLM iniziale: {self.llm.get_stats()}")
+            logger.debug("Stato LLM iniziale: %s", self.llm.get_stats())
+
+    def _await_llm_with_ui_ticks(self, fn, max_wait_s: float) -> Any:
+        if (not bool(CFG.RENDER_ENABLED)) or bool(CFG.HEADLESS) or (not hasattr(self.emulator, "tick_idle")):
+            return fn()
+        max_wait_s_f = float(max_wait_s)
+        if max_wait_s_f <= 0:
+            return None
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(fn)
+            deadline = time.monotonic() + max_wait_s_f
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                try:
+                    return future.result(timeout=min(0.05, remaining))
+                except FutureTimeoutError:
+                    try:
+                        self.emulator.tick_idle(1)
+                    except Exception:
+                        pass
 
     def _would_loop(self, candidate_action: str, action_history: List[str]) -> bool:
         if not CFG.ANTI_LOOP_ENABLED:
@@ -78,7 +104,7 @@ class ExecutionAgent:
         return False
 
     def _select_fallback_action(self, game_mode: str, state: Dict, action_history: List[str]) -> str:
-        print(f"[Fallback] Modalità: {game_mode}, Stato: {state}")
+        logger.debug("Fallback: mode=%s state=%s", game_mode, state)
         
         if game_mode == "menu":
             if len(action_history) >= 2 and action_history[-1] == "a" and action_history[-2] == "a":
@@ -105,11 +131,11 @@ class ExecutionAgent:
         last = action_history[-1] if action_history else None
         for cand in candidates:
             if cand != last and not self._would_loop(cand, action_history):
-                print(f"[Fallback] Scelta intelligente: {cand}")
+                logger.debug("Fallback scelta: %s", cand)
                 return cand
         
         final_choice = "right" if last != "right" else "up"
-        print(f"[Fallback] Scelta finale: {final_choice}")
+        logger.debug("Fallback scelta finale: %s", final_choice)
         return final_choice
 
     def _difficulty_score(self, game_mode: str, state: Dict, task: str) -> float:
@@ -299,7 +325,7 @@ class ExecutionAgent:
         return outcome
 
     def _use_navigation_tool(self, task: str, state: Dict) -> Dict:
-        print(f"[Execution] Uso il tool di navigazione per: {task}")
+        logger.info("Uso tool navigazione per: %s", task)
         success = self.emulator.navigate_to(5, 10, 8)
         return {"success": success, "steps": ["navigate_tool_called"], "reason": "Tool di navigazione usato."}
 
@@ -324,40 +350,48 @@ class ExecutionAgent:
 
         if bool(CFG.PARALLEL_SAMPLING_ENABLED) and n_candidates > 1 and hasattr(self.llm, "get_action_candidates"):
             game_context = {"goal": task, **state}
-            candidates = self.llm.get_action_candidates(
-                game_mode,
-                game_context,
-                screen_image_np,
-                action_history[-20:],
-                n_candidates=n_candidates,
-                num_predict=num_predict,
-                temperature=temperature
-            )
+            max_wait_s = 4.0 if game_mode in ("battle", "menu") else 6.0
+            candidates = self._await_llm_with_ui_ticks(
+                lambda: self.llm.get_action_candidates(
+                    game_mode,
+                    game_context,
+                    screen_image_np,
+                    action_history[-20:],
+                    n_candidates=n_candidates,
+                    num_predict=num_predict,
+                    temperature=temperature
+                ),
+                max_wait_s=max_wait_s
+            ) or []
             chosen = self._select_best_candidate(candidates, game_mode, state, action_history)
             if chosen is None and candidates:
                 chosen = candidates[0]
             action_index = chosen
-            print(f"[Agente] Candidate actions: {candidates} -> chosen: {action_index}")
+            logger.debug("Candidate actions: %s -> chosen=%s", candidates, action_index)
         elif hasattr(self.llm, "get_action"):
             game_context = {"goal": task, **state}
-            action_index = self.llm.get_action(
-                game_mode,
-                game_context,
-                screen_image_np,
-                action_history[-20:],
-                num_predict=num_predict,
-                temperature=temperature
+            max_wait_s = 3.0 if game_mode in ("battle", "menu") else 5.0
+            action_index = self._await_llm_with_ui_ticks(
+                lambda: self.llm.get_action(
+                    game_mode,
+                    game_context,
+                    screen_image_np,
+                    action_history[-20:],
+                    num_predict=num_predict,
+                    temperature=temperature
+                ),
+                max_wait_s=max_wait_s
             )
             if hasattr(self.llm, 'get_stats'):
                 llm_stats = self.llm.get_stats()
-                print(f"[Agente] LLM stats: {llm_stats}")
+                logger.debug("LLM stats: %s", llm_stats)
 
         action = None
         if isinstance(action_index, int) and 0 <= action_index < len(CFG.ACTIONS):
             action = CFG.ACTIONS[action_index]
-            print(f"[Agente] LLM ha suggerito azione: {action} (index: {action_index})")
+            logger.debug("LLM azione: %s (index=%s)", action, action_index)
         else:
-            print(f"[Agente] LLM non ha prodotto azione valida (returned: {action_index})")
+            logger.debug("LLM azione non valida (returned=%s)", action_index)
 
         used_fallback = False
         needs_fallback = (not action) or (isinstance(action, str) and self._would_loop(action, action_history))
@@ -367,7 +401,10 @@ class ExecutionAgent:
                 return {"success": False, "steps": [], "reason": "LLM non ha prodotto un'azione valida.", "action_index": action_index}
             action = self._select_fallback_action(game_mode, state, action_history)
             used_fallback = True
-            print(f"[Agente] Usando fallback perché: {'nessuna azione LLM' if not action else 'azione causerebbe loop'}")
+            logger.debug(
+                "Uso fallback: %s",
+                "nessuna azione LLM" if not action else "azione causerebbe loop"
+            )
 
         self.emulator.press_button(action.upper())
         self.step_count += 1

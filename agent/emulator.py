@@ -1,4 +1,5 @@
 # emulator.py
+import logging
 import time
 from PIL import Image
 import numpy as np
@@ -15,6 +16,8 @@ except ModuleNotFoundError:
     import sys
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from config import config as CFG
+
+logger = logging.getLogger("pokeagent.emulator")
 
 @dataclass
 class ActionTimingParams:
@@ -66,6 +69,9 @@ class EmulatorHarness:
         self._frame_index += int(count)
         return ok
 
+    def tick_idle(self, frames: int = 1) -> bool:
+        return self._tick(count=int(max(1, frames)), render=None)
+
     def _init_emulator(self):
         """Inizializza l'emulatore di Game Boy con PyBoy v2.x."""
         try:
@@ -73,13 +79,12 @@ class EmulatorHarness:
             window = "null" if CFG.HEADLESS else "SDL2"
             self.emulator = PyBoy(self.rom_path, window=window)
             self.emulator.set_emulation_speed(CFG.EMULATION_SPEED)
-            print(f"[Emulator] PyBoy v2.x inizializzato con successo per ROM: {self.rom_path}")
-            print(f"[Emulator] Modalità GUI: {window}, Velocità: {CFG.EMULATION_SPEED}x")
+            logger.info("PyBoy inizializzato: rom=%s window=%s speed=%sx", self.rom_path, window, CFG.EMULATION_SPEED)
         except ImportError:
-            print("[ERRORE] PyBoy non installato. Installa con: pip install pyboy")
+            logger.error("PyBoy non installato. Installa con: pip install pyboy")
             raise
         except Exception as e:
-            print(f"[ERRORE] Impossibile inizializzare PyBoy: {e}")
+            logger.exception("Impossibile inizializzare PyBoy: %s", e)
             raise
 
     def _load_knowledge_base(self) -> Dict:
@@ -88,7 +93,7 @@ class EmulatorHarness:
             with open(CFG.KNOWLEDGE_BASE_FILE, 'r') as f:
                 return json.load(f)
         except FileNotFoundError:
-            print(f"[Emulator] Knowledge base non trovata in {CFG.KNOWLEDGE_BASE_FILE}")
+            logger.warning("Knowledge base non trovata in %s", CFG.KNOWLEDGE_BASE_FILE)
             return {"type_matchups": {}, "map_connections": {}, "important_npcs": {}}
 
     def get_current_state(self) -> Dict[str, Any]:
@@ -107,12 +112,11 @@ class EmulatorHarness:
     def _get_screenshot(self) -> Image.Image:
         """Cattura uno screenshot dallo schermo dell'emulatore."""
         try:
-            self._tick(1, render=bool(CFG.RENDER_ENABLED) and (not bool(CFG.HEADLESS)))
+            self._tick(1, render=None)
             screenshot = self.emulator.screen.image
-            print("[Emulator] Screenshot catturato con successo")
             return screenshot
         except Exception as e:
-            print(f"[ERRORE] Impossibile catturare screenshot: {e}")
+            logger.exception("Impossibile catturare screenshot: %s", e)
             return Image.new('RGB', (160, 144), color='black')
 
     def _read_ram_data(self) -> Dict[str, int]:
@@ -122,9 +126,9 @@ class EmulatorHarness:
             for name, offset in CFG.RAM_OFFSETS.items():
                 value = self.emulator.memory[offset]
                 ram_data[name] = value
-            print("[Emulator] Dati RAM letti con successo")
+            logger.debug("Dati RAM letti con successo")
         except Exception as e:
-            print(f"[ERRORE] Impossibile leggere memoria: {e}")
+            logger.exception("Impossibile leggere memoria: %s", e)
             for name in CFG.RAM_OFFSETS.keys():
                 ram_data[name] = 0
         return ram_data
@@ -165,7 +169,7 @@ class EmulatorHarness:
             }
             
             if button not in button_map:
-                print(f"[ERRORE] Pulsante non valido: {button}")
+                logger.warning("Pulsante non valido: %s", button)
                 return
             
             btn = button_map[button]
@@ -181,13 +185,14 @@ class EmulatorHarness:
             hold_frames, wait_frames = self.timing_params.calculate_frames(action_type)
 
             self.emulator.button(btn, hold_frames)
-            self._tick(count=hold_frames + wait_frames, render=bool(CFG.RENDER_ENABLED) and (not bool(CFG.HEADLESS)))
+            self._tick(count=hold_frames + wait_frames, render=None)
             
-            print(f"[Emulator] Pulsante premuto: {button} (hold: {hold_frames}, wait: {wait_frames}) | Type: {action_type}")
-            time.sleep(0.1)
+            logger.debug("Pulsante: %s hold=%s wait=%s type=%s", button, hold_frames, wait_frames, action_type)
+            if bool(CFG.RENDER_ENABLED) and (not bool(CFG.HEADLESS)):
+                time.sleep(0.01)
             
         except Exception as e:
-            print(f"[ERRORE] Impossibile premere pulsante {button}: {e}")
+            logger.exception("Impossibile premere pulsante %s: %s", button, e)
 
     def navigate_to(self, target_map: int, target_x: int, target_y: int) -> bool:
         """
@@ -196,7 +201,7 @@ class EmulatorHarness:
         """
         if not CFG.ENABLE_PATHFINDER:
             return False
-        print(f"[Tool] Pathfinding verso Mappa {target_map}, ({target_x}, {target_y})")
+        logger.info("Pathfinding verso mappa=%s (%s,%s)", target_map, target_x, target_y)
         return True
 
     def get_knowledge_context(self, current_map_id: int) -> str:
@@ -234,7 +239,7 @@ class EmulatorHarness:
 
     def solve_boulder_puzzle(self, puzzle_id: str) -> bool:
         """Risolutore specializzato per un puzzle specifico."""
-        print(f"[Tool] Risolvo puzzle: {puzzle_id}")
+        logger.info("Risolvo puzzle: %s", puzzle_id)
         sequence = ["UP", "RIGHT", "DOWN", "LEFT"]
         for btn in sequence:
             self.press_button(btn)
@@ -245,6 +250,6 @@ class EmulatorHarness:
         if self.emulator:
             try:
                 self.emulator.stop()
-                print("[Emulator] Emulatore chiuso correttamente")
+                logger.info("Emulatore chiuso correttamente")
             except Exception as e:
-                print(f"[ERRORE] Impossibile chiudere emulatore: {e}")
+                logger.exception("Impossibile chiudere emulatore: %s", e)

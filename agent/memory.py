@@ -1,4 +1,5 @@
 # memory.py
+import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 try:
@@ -6,7 +7,9 @@ try:
     from chromadb.config import Settings
 except ImportError:
     chromadb = None
-    print("Avviso: chromadb non installato. La memoria a lungo termine sarà disabilitata.")
+    logging.getLogger("pokeagent.memory").warning(
+        "chromadb non installato: memoria a lungo termine disabilitata"
+    )
 
 from config import config as CFG
 

@@ -70,7 +70,7 @@ class Config:
     # LLM Integration
     LLM_ENABLED: bool = True
     LLM_HOST: str = "http://localhost:11434"
-    LLM_MODEL: str = "qwen2.5:0.5b"
+    LLM_MODEL: str = "llama3.2:3b"
     LLM_TEMPERATURE: float = 0.3
     LLM_TIMEOUT: float = 60.0
     LLM_MIN_INTERVAL_MS: int = 50
@@ -86,6 +86,15 @@ class Config:
     LLM_RETRY_ATTEMPTS: int = 2
     LLM_CONSECUTIVE_FAILURE_THRESHOLD: int = 3
     LLM_FAILURE_COOLDOWN_SECONDS: int = 60
+    
+    # Nuove configurazioni per performance ottimizzate
+    LLM_FAST_MODEL: str = "qwen2.5:0.5b"  # Modello più veloce per fallback
+    LLM_ENABLE_SMART_CACHING: bool = True
+    LLM_CACHE_SIMILARITY_THRESHOLD: float = 0.85
+    LLM_ADAPTIVE_TIMEOUT: bool = True
+    LLM_ENABLE_RESPONSE_COMPRESSION: bool = True
+    LLM_MAX_RESPONSE_LENGTH: int = 150
+    LLM_ENABLE_DETAILED_LOGGING: bool = True
 
     ADAPTIVE_COMPUTE_ENABLED: bool = True
     PARALLEL_SAMPLING_ENABLED: bool = True

@@ -1,12 +1,11 @@
 import logging
 
 from config import config as CFG
-from agent.agent import MasterAgent
-from agent.emulator import EmulatorHarness
-from agent.llm import LLMConfig, OllamaLLMClient
 
 
-def _build_llm_client() -> OllamaLLMClient:
+def _build_llm_client():
+    from agent.llm import LLMConfig, OllamaLLMClient
+
     llm_config = LLMConfig(
         enabled=bool(CFG.LLM_ENABLED),
         host=str(CFG.LLM_HOST),
@@ -33,6 +32,9 @@ def _build_llm_client() -> OllamaLLMClient:
 def main() -> None:
     logging.basicConfig(level=getattr(logging, str(CFG.LOG_LEVEL).upper(), logging.INFO))
 
+    from agent.agent import MasterAgent
+    from agent.emulator import EmulatorHarness
+
     emulator = EmulatorHarness(CFG.ROM_PATH)
     llm_client = _build_llm_client()
     agent = MasterAgent(emulator, llm_client)
@@ -48,4 +50,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

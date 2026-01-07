@@ -14,7 +14,7 @@ The agent uses a hybrid approach combining:
     *   **Planning**: Formulates short-term goals based on current state and Knowledge Base.
     *   **Execution**: Translates goals into precise action sequences, handling movement and menus.
     *   **Critique**: Periodically evaluates action success and adapts strategy.
-*   **Local LLM Integration**: Support for models via Ollama (default: `qwen2.5:0.5b` for speed and efficiency).
+*   **Local LLM Integration**: Support for models via Ollama (default: `llama3.2:3b` for a strong quality/speed trade-off).
 *   **Chain of Thought (CoT)**: The agent "thinks" before acting, explaining the reasoning behind its choices (visible in logs).
 *   **Test-Time Compute Scaling**: Dynamically increases parallel LLM action sampling (best-of-N) for harder situations.
 *   **Semantic Knowledge Base**: The system understands the game map, area connections, and main objectives.
@@ -129,7 +129,7 @@ The system includes robustness through:
 4.  **Prepare Ollama**:
     Ensure Ollama is installed and pull the required model (or modify it in `config.py`):
     ```bash
-    ollama pull qwen2.5:0.5b
+    ollama pull llama3.2:3b
     ```
 
 5.  **Add the ROM**:
