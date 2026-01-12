@@ -1,51 +1,83 @@
+#!/usr/bin/env python3
+import argparse
 import logging
 
 from config import config as CFG
 
 
-def _build_llm_client():
-    from agent.llm import LLMConfig, OllamaLLMClient
-
-    llm_config = LLMConfig(
-        enabled=bool(CFG.LLM_ENABLED),
-        host=str(CFG.LLM_HOST),
-        model=str(CFG.LLM_MODEL),
-        temperature=float(CFG.LLM_TEMPERATURE),
-        timeout=float(CFG.LLM_TIMEOUT),
-        min_interval_ms=int(CFG.LLM_MIN_INTERVAL_MS),
-        max_calls_per_minute=int(CFG.LLM_MAX_CALLS_PER_MINUTE),
-        cache_ttl_seconds=int(CFG.LLM_CACHE_TTL_SECONDS),
-        use_vision=bool(CFG.LLM_USE_VISION),
-        use_token_bucket=bool(CFG.LLM_USE_TOKEN_BUCKET),
-        use_fast_cache_key=bool(CFG.LLM_USE_FAST_CACHE_KEY),
-        use_for_exploration=bool(CFG.LLM_USE_FOR_EXPLORATION),
-        use_for_battle=bool(CFG.LLM_USE_FOR_BATTLE),
-        use_for_menu=bool(CFG.LLM_USE_FOR_MENU),
-        fallback_on_error=bool(CFG.LLM_FALLBACK_ON_ERROR),
-        retry_attempts=int(CFG.LLM_RETRY_ATTEMPTS),
-        consecutive_failure_threshold=int(CFG.LLM_CONSECUTIVE_FAILURE_THRESHOLD),
-        failure_cooldown_seconds=int(CFG.LLM_FAILURE_COOLDOWN_SECONDS)
-    )
-    return OllamaLLMClient(llm_config)
-
-
 def main() -> None:
-    logging.basicConfig(level=getattr(logging, str(CFG.LOG_LEVEL).upper(), logging.INFO))
+    parser = argparse.ArgumentParser(description="Pokemon Red BC Agent")
+    parser.add_argument(
+        "--mode",
+        choices=["record", "train", "play"],
+        default="record",
+        help="Mode: record (capture gameplay), train (BC training), play (inference)"
+    )
+    parser.add_argument(
+        "--rom",
+        type=str,
+        default=CFG.ROM_PATH,
+        help="Path to Pokemon Red ROM"
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=CFG.RECORDINGS_DIR,
+        help="Directory for recordings"
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=CFG.BC_EPOCHS,
+        help="Training epochs"
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=CFG.BC_BATCH_SIZE,
+        help="Training batch size"
+    )
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=10000,
+        help="Steps for play mode"
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=CFG.INFERENCE_TEMPERATURE,
+        help="Sampling temperature for play mode"
+    )
+    args = parser.parse_args()
 
-    from agent.agent import MasterAgent
-    from agent.emulator import EmulatorHarness
-
-    emulator = EmulatorHarness(CFG.ROM_PATH)
-    llm_client = _build_llm_client()
-    agent = MasterAgent(emulator, llm_client)
+    logging.basicConfig(
+        level=getattr(logging, CFG.LOG_LEVEL.upper(), logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
     try:
-        while True:
-            agent.run_step()
+        if args.mode == "record":
+            from agent.trainer import HumanRecorder
+            recorder = HumanRecorder(rom_path=args.rom)
+            recorder.record_session()
+        elif args.mode == "train":
+            from agent.trainer import BCTrainer
+            trainer = BCTrainer(rom_path=args.rom)
+            trainer.train(
+                data_dir=args.data_dir,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+            )
+            trainer.close()
+        elif args.mode == "play":
+            from agent.trainer import InferenceRunner
+            runner = InferenceRunner(rom_path=args.rom)
+            runner.play(num_steps=args.steps, temperature=args.temperature)
+            runner.close()
     except KeyboardInterrupt:
-        pass
-    finally:
-        emulator.close()
+        logging.info("Interrupted by user")
 
 
 if __name__ == "__main__":

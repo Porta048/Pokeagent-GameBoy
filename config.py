@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 
 def _default_device() -> Any:
@@ -14,33 +14,34 @@ def _default_device() -> Any:
         else ("cuda" if torch.cuda.is_available() else "cpu")
     )
 
+
 @dataclass
 class Config:
     ROM_PATH: str = "roms/Pokemon Red.gb"
     HEADLESS: bool = False
-    EMULATION_SPEED: int = 1
+    EMULATION_SPEED: int = 0
     RENDER_ENABLED: bool = True
     RENDER_EVERY_N_FRAMES: int = 2
     DEVICE: Any = field(default_factory=_default_device)
     SAVE_DIR_PREFIX: str = "pokemon_ai_saves"
-    MODEL_FILENAME: str = "model_ppo.pth"
-    STATS_FILENAME: str = "stats_ppo.json"
-    GAME_STATE_FILENAME: str = "game_state.state"
+    MODEL_FILENAME: str = "model_bc.pth"
+    RECORDINGS_DIR: str = "recordings"
     KNOWLEDGE_BASE_FILE: str = "data/knowledge_base.json"
-    FRAME_STACK_SIZE: int = 4
-    SAVE_FREQUENCY: int = 10000
-    PERFORMANCE_LOG_INTERVAL: int = 10000
+    LOG_FILE: str = "pokemon_ai.log"
+    LOG_LEVEL: str = "INFO"
+
     ACTIONS: List[Optional[str]] = field(default_factory=lambda: [
-        None,      
-        'up',      
-        'down',    
-        'left',    
-        'right',   
-        'a',       
-        'b',       
-        'start',   
-        'select'   
+        None,
+        'up',
+        'down',
+        'left',
+        'right',
+        'a',
+        'b',
+        'start',
+        'select'
     ])
+
     FRAMESKIP_MAP: Dict[str, int] = field(default_factory=lambda: {
         "dialogue": 6,
         "battle": 10,
@@ -48,68 +49,13 @@ class Config:
         "exploring": 8,
         "base": 6
     })
-    HP_THRESHOLD: int = 500
-    MENU_THRESHOLD: float = 0.15
-    DIALOGUE_THRESHOLD: int = 30
-    ANTI_LOOP_ENABLED: bool = True
-    LOG_FILE: str = "pokemon_ai.log"
-    LOG_LEVEL: str = "INFO"
-    ENABLE_PATHFINDER: bool = False
-    CRITIQUE_ENABLED: bool = True
-    LONG_TERM_MEMORY_PATH: str = "chroma_db"
-    MEMORY_SUMMARIZE_EVERY_N_STEPS: int = 50
-    PLANNER_PROMPT_TEMPLATE: str = (
-        "Sei un assistente che pianifica obiettivi a breve termine per Pokémon.\n"
-        "Stato di gioco: {game_state}\n"
-        "Obiettivo a lungo termine: {long_term_goal}\n"
-        "Eventi recenti:\n{recent_history}\n"
-        "Fatti rilevanti:\n{relevant_facts}\n"
-        "Proponi un singolo prossimo obiettivo chiaro e fattibile."
-    )
 
-    # LLM Integration
-    LLM_ENABLED: bool = True
-    LLM_HOST: str = "http://localhost:11434"
-    LLM_MODEL: str = "llama3.2:3b"
-    LLM_TEMPERATURE: float = 0.3
-    LLM_TIMEOUT: float = 60.0
-    LLM_MIN_INTERVAL_MS: int = 50
-    LLM_MAX_CALLS_PER_MINUTE: int = 600
-    LLM_CACHE_TTL_SECONDS: int = 20
-    LLM_USE_VISION: bool = False
-    LLM_USE_TOKEN_BUCKET: bool = True
-    LLM_USE_FAST_CACHE_KEY: bool = True
-    LLM_USE_FOR_EXPLORATION: bool = True
-    LLM_USE_FOR_BATTLE: bool = True
-    LLM_USE_FOR_MENU: bool = True
-    LLM_FALLBACK_ON_ERROR: bool = True
-    LLM_RETRY_ATTEMPTS: int = 2
-    LLM_CONSECUTIVE_FAILURE_THRESHOLD: int = 3
-    LLM_FAILURE_COOLDOWN_SECONDS: int = 60
-    
-    # Nuove configurazioni per performance ottimizzate
-    LLM_FAST_MODEL: str = "qwen2.5:0.5b"  # Modello più veloce per fallback
-    LLM_ENABLE_SMART_CACHING: bool = True
-    LLM_CACHE_SIMILARITY_THRESHOLD: float = 0.85
-    LLM_ADAPTIVE_TIMEOUT: bool = True
-    LLM_ENABLE_RESPONSE_COMPRESSION: bool = True
-    LLM_MAX_RESPONSE_LENGTH: int = 150
-    LLM_ENABLE_DETAILED_LOGGING: bool = True
+    BC_LEARNING_RATE: float = 1e-4
+    BC_BATCH_SIZE: int = 64
+    BC_EPOCHS: int = 50
+    BC_VAL_SPLIT: float = 0.1
+    INFERENCE_TEMPERATURE: float = 0.5
 
-    ADAPTIVE_COMPUTE_ENABLED: bool = True
-    PARALLEL_SAMPLING_ENABLED: bool = True
-    PARALLEL_SAMPLING_MIN_CANDIDATES: int = 3
-    PARALLEL_SAMPLING_MAX_CANDIDATES: int = 5
-
-    LLM_ACTION_BUDGET_EXPLORING: int = 900
-    LLM_ACTION_BUDGET_MENU: int = 1200
-    LLM_ACTION_BUDGET_BATTLE: int = 2200
-    LLM_ACTION_BUDGET_BOSS: int = 4000
-
-    LLM_PLANNING_BUDGET_DEFAULT: int = 2500
-    LLM_PLANNING_BUDGET_STRATEGIC: int = 10000
-    LLM_CRITIQUE_BUDGET: int = 800
-    
     RAM_OFFSETS: Dict[str, int] = field(default_factory=lambda: {
         "player_x": 0xD362,
         "player_y": 0xD361,
@@ -131,51 +77,32 @@ class Config:
         "opponent_hp_current": 0xCFE6,
         "opponent_hp_max": 0xD8B5
     })
-    
+
     def __post_init__(self) -> None:
         self._validate_paths()
-        self._validate_ranges()
         self._validate_device()
-    
+
     def _validate_paths(self) -> None:
         if self.SAVE_DIR_PREFIX:
             Path(self.SAVE_DIR_PREFIX).mkdir(parents=True, exist_ok=True)
-    
-    def _validate_ranges(self) -> None:
-        if self.EMULATION_SPEED < 0:
-            raise ValueError(f"EMULATION_SPEED deve essere >= 0, ottenuto {self.EMULATION_SPEED}")
-        if self.FRAME_STACK_SIZE < 1:
-            raise ValueError(f"FRAME_STACK_SIZE deve essere >= 1, ottenuto {self.FRAME_STACK_SIZE}")
-        if self.RENDER_EVERY_N_FRAMES < 1:
-            raise ValueError(f"RENDER_EVERY_N_FRAMES deve essere >= 1, ottenuto {self.RENDER_EVERY_N_FRAMES}")
-        if self.SAVE_FREQUENCY < 1:
-            raise ValueError(f"SAVE_FREQUENCY deve essere >= 1, ottenuto {self.SAVE_FREQUENCY}")
-        if self.PERFORMANCE_LOG_INTERVAL < 1:
-            raise ValueError(f"PERFORMANCE_LOG_INTERVAL deve essere >= 1, ottenuto {self.PERFORMANCE_LOG_INTERVAL}")
-        if not 0.0 <= self.MENU_THRESHOLD <= 1.0:
-            raise ValueError(f"MENU_THRESHOLD deve essere in [0.0, 1.0], ottenuto {self.MENU_THRESHOLD}")
-    
+        Path(self.RECORDINGS_DIR).mkdir(parents=True, exist_ok=True)
+
     def _validate_device(self) -> None:
         try:
             import torch
         except Exception:
             return
         if not isinstance(self.DEVICE, torch.device):
-            raise TypeError(f"DEVICE deve essere torch.device, ottenuto {type(self.DEVICE)}")
-    
+            raise TypeError(f"DEVICE must be torch.device, got {type(self.DEVICE)}")
+
     def get_save_dir(self, rom_path: str) -> Path:
         rom_name = Path(rom_path).stem
         save_dir = Path(f"{self.SAVE_DIR_PREFIX}_{rom_name}")
         save_dir.mkdir(parents=True, exist_ok=True)
         return save_dir
-    
+
     def get_model_path(self, rom_path: str) -> Path:
         return self.get_save_dir(rom_path) / self.MODEL_FILENAME
-    
-    def get_stats_path(self, rom_path: str) -> Path:
-        return self.get_save_dir(rom_path) / self.STATS_FILENAME
-    
-    def get_game_state_path(self, rom_path: str) -> Path:
-        return self.get_save_dir(rom_path) / self.GAME_STATE_FILENAME
+
 
 config = Config()

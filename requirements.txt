@@ -1,39 +1,6 @@
-# Core dependencies (GPU-accelerated)
-# For CUDA 12.1+ (NVIDIA GPU):
 torch>=2.0.0
 torchvision>=0.15.0
-# Install with: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-
-# For CPU-only (no GPU):
-# pip install torch torchvision
-
-numpy>=1.24.0  # Compatible with both NumPy 1.x and 2.x
-
-# Game Boy emulator
+numpy>=1.24.0
 pyboy>=2.0.0
-
-# Image processing
 Pillow>=10.0.0
-opencv-python>=4.8.0
-
-# Input handling
-keyboard>=0.13.5
-
-# Optional: OCR per lettura t
-esto schermo (dialoghi, menu, nomi Pokemon)
-# Installa con: pip install easyocr
-# NOTA: Prima esecuzione scarica modello (~100MB)
-# easyocr>=1.7.0
-
-# HTTP client for LLM integration (Ollama)
-requests>=2.31.0
-ollama>=0.2.0
-
-# LLM integration (Hugging Face)
-transformers>=4.38.2
-
-
-
-# Optional: For parallel training (future feature)
-# multiprocessing is built-in
-# ray>=2.9.0  # Uncomment for distributed training
+pygame>=2.5.0
