@@ -70,6 +70,7 @@ class EmulatorHarness:
             window = "null" if CFG.HEADLESS else "SDL2"
             self.emulator = PyBoy(self.rom_path, window=window)
             self.emulator.set_emulation_speed(CFG.EMULATION_SPEED)
+            self._load_state()
             logger.info("PyBoy initialized: rom=%s window=%s speed=%sx", self.rom_path, window, CFG.EMULATION_SPEED)
         except ImportError:
             logger.error("PyBoy not installed. Install with: pip install pyboy")
@@ -77,6 +78,16 @@ class EmulatorHarness:
         except Exception as e:
             logger.exception("Unable to initialize PyBoy: %s", e)
             raise
+
+    def _load_state(self):
+        from pathlib import Path
+        state_path = Path(self.rom_path + ".state")
+        if state_path.exists():
+            with open(state_path, "rb") as f:
+                self.emulator.load_state(f)
+            logger.info("Save state loaded from %s", state_path)
+        else:
+            logger.warning("No save state found at %s, starting from boot", state_path)
 
     def _load_knowledge_base(self) -> Dict:
         try:
@@ -171,9 +182,10 @@ class EmulatorHarness:
 
     def navigate_to(self, target_map: int, target_x: int, target_y: int) -> bool:
         if not CFG.ENABLE_PATHFINDER:
+            logger.debug("Pathfinder disabled, skipping navigation")
             return False
         logger.info("Pathfinding to map=%s (%s,%s)", target_map, target_x, target_y)
-        return True
+        return False
 
     def get_knowledge_context(self, current_map_id: int) -> str:
         if not self.loaded_knowledge_base:

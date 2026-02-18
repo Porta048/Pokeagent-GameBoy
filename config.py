@@ -29,6 +29,7 @@ class Config:
     KNOWLEDGE_BASE_FILE: str = "data/knowledge_base.json"
     LOG_FILE: str = "pokemon_ai.log"
     LOG_LEVEL: str = "INFO"
+    ENABLE_PATHFINDER: bool = False
 
     ACTIONS: List[Optional[str]] = field(default_factory=lambda: [
         None,

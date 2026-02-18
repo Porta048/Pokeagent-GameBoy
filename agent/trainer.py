@@ -89,15 +89,22 @@ class HumanRecorder:
         from pyboy import PyBoy
         from pyboy.utils import WindowEvent
         from PIL import Image
-        
+        from pathlib import Path
+
         _active_recorder = self.recorder
         signal.signal(signal.SIGINT, _save_on_exit)
         signal.signal(signal.SIGTERM, _save_on_exit)
         atexit.register(_save_on_exit)
-        
+
         self.emulator = PyBoy(self.rom_path, window="SDL2")
         self.emulator.set_emulation_speed(1)
-        
+
+        state_path = Path(self.rom_path + ".state")
+        if state_path.exists():
+            with open(state_path, "rb") as f:
+                self.emulator.load_state(f)
+            logger.info("Save state loaded from %s", state_path)
+
         logger.info("=" * 60)
         logger.info("RECORDING MODE - All keypresses are recorded!")
         logger.info("=" * 60)
@@ -111,7 +118,7 @@ class HumanRecorder:
         logger.info("Play the game! Recording EVERY keypress...")
         logger.info("Close the PyBoy window to save and exit")
         logger.info("=" * 60)
-        
+
         key_to_action = {
             WindowEvent.PRESS_ARROW_UP: 1,
             WindowEvent.PRESS_ARROW_DOWN: 2,
@@ -122,36 +129,35 @@ class HumanRecorder:
             WindowEvent.PRESS_BUTTON_START: 7,
             WindowEvent.PRESS_BUTTON_SELECT: 8,
         }
-        
+
         action_names = ['none', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'A', 'B', 'START', 'SELECT']
         total_recorded = 0
-        last_action_frame = -10
-        
+
         while self.running:
             try:
-                events = self.emulator.tick(render=True)
-                if events is None:
+                still_running = self.emulator.tick(render=True)
+                if not still_running:
                     break
             except Exception:
                 break
-            
-            for event in events:
+
+            for event in self.emulator.events:
                 if event in key_to_action:
                     action = key_to_action[event]
-                    
+
                     screenshot = self.emulator.screen.image
                     gray = screenshot.convert('L')
                     gray = gray.resize((84, 84), Image.BILINEAR)
                     obs = np.array(gray, dtype=np.uint8).reshape(84, 84, 1)
-                    
+
                     self.recorder.record(obs, action)
                     total_recorded += 1
-                    
+
                     current_map = self.emulator.memory[0xD35E]
                     current_x = self.emulator.memory[0xD362]
                     current_y = self.emulator.memory[0xD361]
                     in_battle = self.emulator.memory[0xD057] > 0
-                    
+
                     if total_recorded % 50 == 0:
                         battle_str = " [BATTLE]" if in_battle else ""
                         logger.info(
@@ -159,7 +165,7 @@ class HumanRecorder:
                             total_recorded, current_map, current_x, current_y,
                             action_names[action], battle_str
                         )
-        
+
         self.recorder.save()
         _active_recorder = None
         stats = self.recorder.get_stats()
@@ -168,7 +174,7 @@ class HumanRecorder:
         logger.info("Total samples saved: %d", stats["total_recorded"])
         logger.info("Files created: %d", stats["files_saved"] + (1 if stats["current_buffer"] > 0 else 0))
         logger.info("=" * 60)
-        
+
         try:
             self.emulator.stop()
         except Exception:
