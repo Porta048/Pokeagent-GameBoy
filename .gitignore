@@ -141,11 +141,8 @@ cython_debug/
 *.gbc
 *.rom
 
-# AI training saves and checkpoints
-pokemon_ai_saves*/
-*.pth
+# Stati di salvataggio dell'emulatore
 *.state
-*.json
 
 # Logs
 *.log
@@ -169,3 +166,6 @@ logs/
 *.jpeg
 !docs/*.png
 !docs/*.jpg
+
+# Training RL
+runs/

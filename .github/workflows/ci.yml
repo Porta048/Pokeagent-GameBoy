@@ -7,36 +7,27 @@ on:
     branches: [ main, develop ]
 
 jobs:
-  test:
-    name: Test on Python ${{ matrix.python-version }}
+  check:
+    name: Compilazione e import
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ['3.10', '3.11']
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsdl2-dev
+          python-version: '3.12'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest mock
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
 
-      - name: Run tests
+      # La ROM non e' nel repo: si verifica solo che il codice compili e si importi
+      - name: Compile and import
         run: |
-          # Use pytest to run tests in the tests/ directory
-          # Add current directory to PYTHONPATH
-          export PYTHONPATH=$PYTHONPATH:.
-          pytest tests/
+          python -m compileall -q main.py agent
+          python -c "import agent.env, agent.train, agent.play"
+          python main.py --help

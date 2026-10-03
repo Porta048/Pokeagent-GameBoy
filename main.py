@@ -2,82 +2,34 @@
 import argparse
 import logging
 
-from config import config as CFG
-
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Pokemon Red BC Agent")
-    parser.add_argument(
-        "--mode",
-        choices=["record", "train", "play"],
-        default="record",
-        help="Mode: record (capture gameplay), train (BC training), play (inference)"
-    )
-    parser.add_argument(
-        "--rom",
-        type=str,
-        default=CFG.ROM_PATH,
-        help="Path to Pokemon Red ROM"
-    )
-    parser.add_argument(
-        "--data-dir",
-        type=str,
-        default=CFG.RECORDINGS_DIR,
-        help="Directory for recordings"
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=CFG.BC_EPOCHS,
-        help="Training epochs"
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=CFG.BC_BATCH_SIZE,
-        help="Training batch size"
-    )
-    parser.add_argument(
-        "--steps",
-        type=int,
-        default=10000,
-        help="Steps for play mode"
-    )
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=CFG.INFERENCE_TEMPERATURE,
-        help="Sampling temperature for play mode"
-    )
+    parser = argparse.ArgumentParser(description="Agente PPO per Pokemon Rosso")
+    parser.add_argument("--mode", choices=["train", "play"], default="train", help="train: addestra con PPO, play: guarda l'agente giocare")
+    parser.add_argument("--rom", type=str, default="roms/Pokemon Red.gb", help="ROM (lo stato iniziale e' <rom>.state)")
+    parser.add_argument("--run-dir", type=str, default="runs/ppo", help="Cartella per checkpoint e TensorBoard")
+    parser.add_argument("--envs", type=int, default=10, help="Partite parallele per il training")
+    parser.add_argument("--timesteps", type=int, default=50_000_000, help="Passi di training da eseguire in questa sessione")
+    parser.add_argument("--episode-steps", type=int, default=20480, help="Durata massima di una partita in training")
+    parser.add_argument("--steps", type=int, default=20480, help="Passi da giocare in modalita' play")
+    parser.add_argument("--speed", type=int, default=1, help="Velocita' emulatore in play (0 = massima)")
     args = parser.parse_args()
 
     logging.basicConfig(
-        level=getattr(logging, CFG.LOG_LEVEL.upper(), logging.INFO),
+        level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
     try:
-        if args.mode == "record":
-            from agent.trainer import HumanRecorder
-            recorder = HumanRecorder(rom_path=args.rom)
-            recorder.record_session()
-        elif args.mode == "train":
-            from agent.trainer import BCTrainer
-            trainer = BCTrainer(rom_path=args.rom)
-            trainer.train(
-                data_dir=args.data_dir,
-                epochs=args.epochs,
-                batch_size=args.batch_size,
-            )
-            trainer.close()
-        elif args.mode == "play":
-            from agent.trainer import InferenceRunner
-            runner = InferenceRunner(rom_path=args.rom)
-            runner.play(num_steps=args.steps, temperature=args.temperature)
-            runner.close()
+        if args.mode == "train":
+            from agent.train import train
+            train(args.rom, args.run_dir, args.envs, args.timesteps, args.episode_steps)
+        else:
+            from agent.play import play
+            play(args.rom, args.run_dir, args.steps, args.speed)
     except KeyboardInterrupt:
-        logging.info("Interrupted by user")
+        logging.info("Interrotto dall'utente")
 
 
 if __name__ == "__main__":

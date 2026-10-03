@@ -1,6 +1,9 @@
-torch>=2.0.0
-torchvision>=0.15.0
+# Su GPU RTX 50xx serve torch con CUDA 12.8:
+# pip install torch --index-url https://download.pytorch.org/whl/cu128
+torch>=2.7.0
 numpy>=1.24.0
-pyboy>=2.0.0
-Pillow>=10.0.0
-pygame>=2.5.0
+pyboy>=2.5.0
+gymnasium>=1.0.0
+stable-baselines3>=2.4.0
+tensorboard>=2.15.0
+orjson>=3.9.0
