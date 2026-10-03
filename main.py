@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import logging
+from pathlib import Path
 
 
 def main() -> None:
@@ -14,6 +15,9 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=20480, help="Passi da giocare in modalita' play")
     parser.add_argument("--speed", type=int, default=1, help="Velocita' emulatore in play (0 = massima)")
     args = parser.parse_args()
+    for path in (args.rom, args.rom + ".state"):
+        if not Path(path).is_file():
+            parser.error(f"file non trovato: {path}")
 
     logging.basicConfig(
         level=logging.INFO,

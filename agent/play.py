@@ -13,7 +13,7 @@ def play(rom_path: str, run_dir: str, steps: int, speed: int) -> None:
     checkpoints = sorted((Path(run_dir) / "checkpoints").glob("*.zip"), key=lambda p: p.stat().st_mtime)
     if not checkpoints:
         logger.error("Nessun checkpoint in %s: lancia prima --mode train", run_dir)
-        return
+        raise SystemExit(1)
     env = PokemonRedEnv(rom_path, max_steps=steps, headless=False)
     env.pyboy.set_emulation_speed(speed)
     model = PPO("MultiInputPolicy", env, device="cpu")
