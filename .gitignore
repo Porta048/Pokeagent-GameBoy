@@ -143,6 +143,7 @@ cython_debug/
 
 # Stati di salvataggio dell'emulatore
 *.state
+*.ram
 
 # Logs
 *.log

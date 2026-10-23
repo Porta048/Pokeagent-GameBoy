@@ -20,3 +20,17 @@ python main.py --mode train
 tensorboard --logdir runs/ppo/tb
 python main.py --mode play
 ```
+
+## Contribuire
+
+Issue e pull request sono benvenute. Prima di aprire una PR esegui il lint:
+
+```bash
+ruff check .
+```
+
+## Licenza
+
+Codice rilasciato sotto licenza [MIT](LICENSE).
+
+ROM e stati di salvataggio **non** sono inclusi e non vanno caricati nel repository: procurati una copia legale del gioco. Pokémon e Game Boy sono marchi di Nintendo, Game Freak e Creatures; questo progetto non è affiliato né approvato da loro.
